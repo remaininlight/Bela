@@ -21,6 +21,7 @@
 #include "../include/Bela.h"
 #include "../include/Gpio.h"
 #include "../include/Utilities.h"
+#include </opt/rtdm_pruss_irq/rtdm_pruss_irq.h>
 
 #include <iostream>
 #include <stdlib.h>
@@ -47,6 +48,8 @@
 #endif
 
 #ifdef BELA_USE_RTDM
+#define PRU_SYSTEM_EVENT_RTDM 20 // should match the one in pru/pru_rtaudio.p
+static unsigned int pru_system_event_rtdm = PRU_SYSTEM_EVENT_RTDM;
 static char rtdm_driver[] = "/dev/rtdm/rtdm_pruss_irq_0";
 static int rtdm_fd;
 #endif
@@ -702,6 +705,12 @@ int PRU::start(char * const filename)
 		{
 			fprintf(stderr, "Maybe try\n  modprobe rtdm_pruss_irq\n?\n");
 		}
+		return 1;
+	}
+	int ret = __wrap_ioctl(rtdm_fd, RTDM_PRUSS_IRQ_REGISTER, PRU_SYSTEM_EVENT_RTDM);
+	if(ret)
+	{
+		fprintf(stderr, "ioctl failed: %d %s\n", -ret, strerror(-ret));
 		return 1;
 	}
 #endif
