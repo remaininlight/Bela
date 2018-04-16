@@ -111,7 +111,6 @@ class OSCSender{
         	std::unique_ptr<oscpkt::PacketWriter> pw;
 
         	std::unique_ptr<AuxTaskNonRT> send_task;
-        	static void send_task_func(void* ptr, void* buf, int size);
 };
 
 #endif

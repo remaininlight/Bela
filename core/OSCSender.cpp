@@ -14,11 +14,6 @@ OSCSender::OSCSender(int port, std::string ip_address){
 }
 OSCSender::~OSCSender(){}
 
-void OSCSender::send_task_func(void* ptr, void* buf, int size){
-	OSCSender* instance = (OSCSender*)ptr;
-	instance->socket->send(buf, size);
-}
-
 void OSCSender::setup(int port, std::string ip_address){
 
     pw = std::unique_ptr<oscpkt::PacketWriter>(new oscpkt::PacketWriter());
@@ -30,7 +25,9 @@ void OSCSender::setup(int port, std::string ip_address){
 	socket->setPort(port);
 	
 	send_task = std::unique_ptr<AuxTaskNonRT>(new AuxTaskNonRT());
-	send_task->create(std::string("OSCSenderTask_") + std::to_string(port), OSCSender::send_task_func, this);
+	send_task->create(std::string("OSCSenderTask_") + std::to_string(port), [this](void* buf, int size){
+		socket->send(buf, size);
+	});
 }
 
 OSCSender &OSCSender::newMessage(std::string address){
