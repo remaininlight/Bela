@@ -16,12 +16,11 @@ OSCReceiver::~OSCReceiver(){
 	}
 }
 
-void OSCReceiver::recieve_task_func(void* ptr){
-	OSCReceiver* instance = (OSCReceiver*)ptr;
-	while(!gShouldStop && !instance->lShouldStop){
-		instance->waitingForMessage = true;
-		instance->waitForMessage(0);
-		instance->waitingForMessage = false;
+void OSCReceiver::receive_loop(){
+	while(!gShouldStop && !lShouldStop){
+		waitingForMessage = true;
+		waitForMessage(0);
+		waitingForMessage = false;
 		usleep(OSCRECEIVER_POLL_US);
 	}
 }
@@ -37,9 +36,9 @@ void OSCReceiver::setup(int port, std::function<void(oscpkt::Message* msg)> _on_
         return;
     }
 	
-	recieve_task = std::unique_ptr<AuxTaskNonRT>(new AuxTaskNonRT());
-	recieve_task->create(std::string("OSCReceiverTask_") + std::to_string(port), OSCReceiver::recieve_task_func, this);
-    recieve_task->schedule();
+	receive_task = std::unique_ptr<AuxTaskNonRT>(new AuxTaskNonRT());
+	receive_task->create(std::string("OSCReceiverTask_") + std::to_string(port), [this](){ receive_loop(); });
+    receive_task->schedule();
 }
 
 int OSCReceiver::waitForMessage(int timeout){
