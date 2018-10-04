@@ -134,16 +134,16 @@ class Scope{
         void doFFT();
         void setXParams();
         
-		bool isUsingOutBuffer;
-		bool isUsingBuffer;
-		bool isResizing;
+	bool volatile isUsingOutBuffer;
+	bool volatile isUsingBuffer;
+	bool volatile isResizing;
 		
         // settings
         int numChannels;
         float sampleRate;
         int pixelWidth;
         int frameWidth;
-        int plotMode;
+        int plotMode = 0;
         int triggerMode;
         int triggerChannel;
         int triggerDir;

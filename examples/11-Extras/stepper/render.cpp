@@ -29,11 +29,12 @@ const int kStepLengthFast = 500;
 
 int gStepLengthSamples = kStepLengthSlow;
 
-const int gPinA1 = P8_27;
-const int gPinA2 = P8_28;
-const int gPinB1 = P8_29;
-const int gPinB2 = P8_30;
-const int gPinServo = P9_16;
+// Check the pin diagram in the IDE to check where the pins are on your board
+const int gPinA1 = 12;
+const int gPinA2 = 13;
+const int gPinB1 = 14;
+const int gPinB2 = 15;
+const int gPinServo = 10;
 
 int gStepCounter = 0;
 int gPhase = 0;
@@ -55,15 +56,6 @@ enum {
 int gState = 0;
 int gStateCounter = 0;
 
-// setup() is called once before the audio rendering starts.
-// Use it to perform any initialisation and allocation which is dependent
-// on the period size or sample rate.
-//
-// userData holds an opaque pointer to a data structure that was passed
-// in from the call to initAudio().
-//
-// Return true on success; returning false halts the program.
-
 bool setup(BelaContext *context, void *userData)
 {	
 	// This project makes the assumption that the audio and digital
@@ -81,11 +73,6 @@ bool setup(BelaContext *context, void *userData)
 		
 	return true;
 }
-
-// render() is called regularly at the highest priority by the audio engine.
-// Input and output are given from the audio hardware and the other
-// ADCs and DACs (if available). If only audio is available, numMatrixFrames
-// will be 0.
 
 void render(BelaContext *context, void *userData)
 {
@@ -156,9 +143,6 @@ void render(BelaContext *context, void *userData)
 		}
 	}
 }
-
-// cleanup() is called once at the end, after the audio has stopped.
-// Release any resources that were allocated in setup().
 
 void cleanup(BelaContext *context, void *userData)
 {

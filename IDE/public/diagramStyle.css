@@ -8,16 +8,15 @@
 
 #container {
     align: left;
-    overflow: auto;
+    overflow: visible;
 }
 
 #image {
     width: 350px;
     text-align: left;
     margin: 10px auto 40px;
-    padding-bottom: 40px;
     padding-left: 30px;
-    overflow: auto;
+    overflow: visible;
 }
 
 .diagram_text {
@@ -46,7 +45,7 @@
     stroke: none;
 }
 .comms {
-    fill: rgba(0, 0, 255, 0.5); 
+    fill: rgba(0, 0, 255, 0.5);
     stroke: none;
 }
 .audio {
@@ -65,6 +64,26 @@
     fill: rgba(0, 255, 0, 0.6);
     stroke: none;
 }
+.caution {
+    fill: rgba(255, 14, 154, 0.7);
+    stroke: rgb(255, 0, 0);
+}
+.jumper {
+  fill: rgba(0, 255, 255, 0.2);
+  stroke: rgb(0, 255, 255);
+}
+.usbpwrJ {
+  fill: rgba(255, 150, 0, 0.5);
+  stroke: rgb(255, 150, 0);
+}
+.extpwrJ {
+  fill: transparent;
+  stroke: rgb(255, 255, 0);
+}
+.disabled {
+  fill: rgba(0, 0, 0, 0.6);
+  stroke: none;
+}
 /*
 
 
@@ -72,7 +91,7 @@
     fill: rgba(255, 255, 0, 0.3);
     stroke: none;
 }
-header .hi { 
+header .hi {
     background-color: rgba(255, 255, 0, 0.3);
     line-height: 25px;
     }

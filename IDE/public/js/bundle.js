@@ -1,4 +1,4 @@
-(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof require=="function"&&require;if(!u&&a)return a(o,!0);if(i)return i(o,!0);var f=new Error("Cannot find module '"+o+"'");throw f.code="MODULE_NOT_FOUND",f}var l=n[o]={exports:{}};t[o][0].call(l.exports,function(e){var n=t[o][1][e];return s(n?n:e)},l,l.exports,e,t,n,r)}return n[o].exports}var i=typeof require=="function"&&require;for(var o=0;o<r.length;o++)s(r[o]);return s})({1:[function(require,module,exports){
+(function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(require,module,exports){
 // Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
@@ -435,7 +435,7 @@ settingsView.on('error', function (text) {
 });
 
 // project view
-var projectView = new (require('./Views/ProjectView'))('projectManager', [models.project]);
+var projectView = new (require('./Views/ProjectView'))('projectManager', [models.project, models.settings]);
 projectView.on('message', function (event, data) {
 	if (!data.currentProject && models.project.getKey('currentProject')) {
 		data.currentProject = models.project.getKey('currentProject');
@@ -620,17 +620,21 @@ socket.on('init', function (data) {
 	consoleView.connect();
 
 	var timestamp = performance.now();
-	socket.emit('project-event', { func: 'openProject', currentProject: data[2].project, timestamp: timestamp });
+	socket.emit('project-event', { func: 'openProject', currentProject: data.settings.project, timestamp: timestamp });
 	consoleView.emit('openNotification', { func: 'init', timestamp: timestamp });
 
-	models.project.setData({ projectList: data[0], exampleList: data[1], currentProject: data[2].project });
-	models.settings.setData(data[2]);
+	models.project.setData({ projectList: data.projects, exampleList: data.examples, currentProject: data.settings.project });
+	models.settings.setData(data.settings);
 
-	$('#runOnBoot').val(data[3]);
+	$('#runOnBoot').val(data.boot_project);
 
-	models.settings.setKey('xenomaiVersion', data[4]);
+	models.settings.setKey('xenomaiVersion', data.xenomai_version);
 
-	models.status.setData(data[5]);
+	console.log('running on', data.board_string);
+	models.settings.setKey('boardString', data.board_string);
+	tabView.emit('boardString', data.board_string);
+
+	// TODO! models.status.setData(data[5]);
 
 	//models.project.print();
 	//models.settings.print();
@@ -640,11 +644,11 @@ socket.on('init', function (data) {
 	documentationView.emit('init');
 
 	// hack to stop changes to read-only example being overwritten when opening a new tab
-	if (data[2].project === 'exampleTempProject') models.project.once('set', function () {
+	if (data.settings.project === 'exampleTempProject') models.project.once('set', function () {
 		return projectView.emit('example-changed');
 	});
 
-	// socket.io timeout	
+	// socket.io timeout
 	socket.io.engine.pingTimeout = 6000;
 	socket.io.engine.pingInterval = 3000;
 });
@@ -699,7 +703,8 @@ socket.on('cpu-usage', function (data) {
 });
 //socket.on('mode-switch', data => models.status.setKey('msw', data) );
 
-socket.on('disconnect', function () {
+socket.on('disconnect', function (reason) {
+	console.log('disconnect reason:', reason);
 	consoleView.disconnect();
 	toolbarView.emit('disconnected');
 	models.project.setKey('readOnly', true);
@@ -842,42 +847,40 @@ models.status.on('change', function (data, changedKeys) {
 
 // history
 {
-	(function () {
-		var lastState = {},
-		    poppingState = true;
+	var lastState = {},
+	    poppingState = true;
 
-		// file / project changed
-		models.project.on('change', function (data, changedKeys) {
-			if (changedKeys.indexOf('currentProject') !== -1 || changedKeys.indexOf('fileName') !== -1) {
-				var state = { file: data.fileName, project: data.currentProject };
-				if (state.project !== lastState.project || state.file !== lastState.file) {
+	// file / project changed
+	models.project.on('change', function (data, changedKeys) {
+		if (changedKeys.indexOf('currentProject') !== -1 || changedKeys.indexOf('fileName') !== -1) {
+			var state = { file: data.fileName, project: data.currentProject };
+			if (state.project !== lastState.project || state.file !== lastState.file) {
 
-					if (!poppingState) {
-						//console.log('push', state);
-						history.pushState(state, null, null);
-					}
-					poppingState = false;
-					lastState = state;
+				if (!poppingState) {
+					//console.log('push', state);
+					history.pushState(state, null, null);
 				}
+				poppingState = false;
+				lastState = state;
 			}
-		});
+		}
+	});
 
-		// load previously open file / project when browser's back button is clicked
-		window.addEventListener('popstate', function (e) {
-			if (e.state) {
-				console.log('opening project ' + e.state.project + ' file ' + e.state.file);
-				var data = {
-					currentProject: e.state.project,
-					newFile: e.state.file,
-					func: 'openProject',
-					timestamp: performance.now()
-				};
-				consoleView.emit('openNotification', data);
-				socket.emit('project-event', data);
-				poppingState = true;
-			}
-		});
-	})();
+	// load previously open file / project when browser's back button is clicked
+	window.addEventListener('popstate', function (e) {
+		if (e.state) {
+			console.log('opening project ' + e.state.project + ' file ' + e.state.file);
+			var data = {
+				currentProject: e.state.project,
+				newFile: e.state.file,
+				func: 'openProject',
+				timestamp: performance.now()
+			};
+			consoleView.emit('openNotification', data);
+			socket.emit('project-event', data);
+			poppingState = true;
+		}
+	});
 }
 
 // local functions
@@ -940,7 +943,7 @@ function parseErrors(data) {
 					//console.log('rejected error string: '+str);
 					if (str[2] && str[2].indexOf('linker') !== -1) {
 						console.log('linker error');
-						consoleView.emit('warn', 'linker error detected, set verbose build output in settings for details');
+						// consoleView.emit('warn', 'linker error detected, set verbose build output in settings for details');
 					}
 				}
 			}
@@ -1333,7 +1336,7 @@ var ConsoleView = function (_View) {
 					for (var _iterator = log[Symbol.iterator](), _step; !(_iteratorNormalCompletion = (_step = _iterator.next()).done); _iteratorNormalCompletion = true) {
 						var line = _step.value;
 
-						_console.log(line.split(' ').join('&nbsp;'), 'make');
+						_console.warn(line.split(' ').join('&nbsp;'), 'make');
 					}
 				} catch (err) {
 					_didIteratorError = true;
@@ -1379,7 +1382,8 @@ var ConsoleView = function (_View) {
 	}, {
 		key: '__belaLogErr',
 		value: function __belaLogErr(log, data) {
-			_console.warn(log);
+			if (!log.includes('make: *** wait')) // block unneccesary errors when killing process
+				_console.warn(log);
 			//_console.warn(log.split(' ').join('&nbsp;'));
 		}
 	}, {
@@ -1955,7 +1959,7 @@ var EditorView = function (_View) {
 					}
 
 					// load an empty string into the editor
-					// data = '';
+					data = '';
 
 					// start comparison with file on disk
 					this.emit('compare-files', true);
@@ -2290,9 +2294,9 @@ var FileView = function (_View) {
 
 
 					// exclude hidden files
-					if (!viewHiddenFiles && (item.name[0] === '.' || item.dir && item.name === 'build' || item.name === 'settings.json' || item.name === data.currentProject)) continue;
+					if (!viewHiddenFiles && (item.name[0] === '.' || isDir(item) && item.name === 'build' || item.name === 'settings.json' || item.name === data.currentProject)) continue;
 
-					if (item.dir) {
+					if (isDir(item)) {
 
 						directories.push(item);
 					} else {
@@ -2437,7 +2441,7 @@ var FileView = function (_View) {
 				for (var _iterator3 = dir.children[Symbol.iterator](), _step3; !(_iteratorNormalCompletion3 = (_step3 = _iterator3.next()).done); _iteratorNormalCompletion3 = true) {
 					var child = _step3.value;
 
-					if (!child.dir) {
+					if (!isDir(child)) {
 						if (child.size < 1000000) {
 							child.size = (child.size / 1000).toFixed(1) + 'kb';
 						} else if (child.size >= 1000000 && child.size < 1000000000) {
@@ -2599,6 +2603,10 @@ var FileView = function (_View) {
 
 	return FileView;
 }(View);
+
+function isDir(item) {
+	return typeof item.size === 'undefined' && typeof item.children !== 'undefined';
+}
 
 module.exports = FileView;
 
@@ -2888,6 +2896,9 @@ var ProjectView = function (_View) {
 			form.push('<input id="popup-SC" type="radio" name="project-type" data-type="SC">');
 			form.push('<label for="popup-SC">SuperCollider</label>');
 			form.push('</br>');
+			form.push('<input id="popup-CS" type="radio" name="project-type" data-type="CS">');
+			form.push('<label for="popup-CS">Csound</label>');
+			form.push('</br>');
 			form.push('<input type="text" placeholder="Enter your project name">');
 			form.push('</br>');
 			form.push('<button type="submit" class="button popup-save">Create</button>');
@@ -3003,6 +3014,7 @@ var ProjectView = function (_View) {
 					var item = _step.value;
 
 					var ul = $('<ul></ul>').html(item.name + ':');
+
 					var _iteratorNormalCompletion2 = true;
 					var _didIteratorError2 = false;
 					var _iteratorError2 = undefined;
@@ -3012,7 +3024,7 @@ var ProjectView = function (_View) {
 							var child = _step2.value;
 
 							if (child && child.length && child[0] === '.') return 'continue';
-							$('<li></li>').addClass('sourceFile').html(child).appendTo(ul).on('click', function (e) {
+							$('<li></li>').addClass('sourceFile').html(child).appendTo(ul).attr('id', item.name + '/' + child).on('click', function (e) {
 
 								if (_this6.exampleChanged) {
 									_this6.exampleChanged = false;
@@ -3078,6 +3090,27 @@ var ProjectView = function (_View) {
 					}
 				}
 			}
+		}
+	}, {
+		key: '_boardString',
+		value: function _boardString(data) {
+			var boardString;
+			if (data && data.trim) boardString = data.trim();else return;
+
+			var exceptString = boardString;
+			if (exceptString === "CtagFace" || exceptString === "CtagBeast") exceptString = 'Ctag';
+
+			$.getJSON("../example_except.json", function (data) {
+
+				if (exceptString in data) {
+					for (var example in data[exceptString]) {
+						var exampleId = data[exceptString][example].section + "/" + data[exceptString][example].name;
+						try {
+							document.getElementById(exampleId).style.display = 'none';
+						} catch (err) {}
+					}
+				}
+			});
 		}
 	}, {
 		key: '_currentProject',
@@ -3446,11 +3479,11 @@ var SettingsView = function (_View) {
 			var $projects = $('#runOnBoot');
 			$projects.empty();
 
-			// add an empty option to menu and select it
-			$('<option></option>').html('--select--').appendTo($projects);
+			// add a none option
+			$('<option></option>').attr('value', '*none*').html('•none•').appendTo($projects);
 
-			// add a 'none' option
-			$('<option></option>').attr('value', 'none').html('none').appendTo($projects);
+			// add a loop_* option
+			$('<option></option>').attr('value', '*loop*').html('•loop_*•').appendTo($projects);
 
 			// fill project menu with projects
 			for (var i = 0; i < projects.length; i++) {
@@ -3516,6 +3549,66 @@ var SettingsView = function (_View) {
 				}
 			});
 		}
+	}, {
+		key: '_boardString',
+		value: function _boardString(data) {
+			var boardString;
+			if (data && data.trim) boardString = data.trim();else return;
+
+			var settingExceptions = {
+				Bela: {
+					sections: [],
+					subsections: ['disable-led']
+				},
+				BelaMini: {
+					sections: ['capelet-settings'],
+					subsections: ['mute-speaker']
+				},
+				Ctag: {
+					sections: ['capelet-settings'],
+					subsections: ['disable-led', 'mute-speaker', 'hp-level', 'pga-left', 'pga-right']
+				},
+				CtagOnly: {
+					sections: ['capelet-settings'],
+					subsections: ['analog-channels', 'analog-samplerate', 'use-analog', 'adc-level']
+				}
+			};
+
+			var exceptions = {
+				sections: null,
+				subsections: null
+			};
+
+			if (boardString === 'BelaMini') {
+				exceptions['sections'] = settingExceptions['BelaMini']['sections'];
+				exceptions['subsections'] = settingExceptions['BelaMini']['subsections'];
+			} else if (boardString === 'CtagFace' || boardString === 'CtagBeast') {
+				exceptions['sections'] = settingExceptions['Ctag']['sections'];
+				exceptions['subsections'] = settingExceptions['Ctag']['subsections'].concat(settingExceptions['CtagOnly']['subsections']);
+			} else if (boardString === 'CtagFaceBela' || boardString === 'CtagBeastBela') {
+				exceptions['sections'] = settingExceptions['Ctag']['sections'];
+				exceptions['subsections'] = settingExceptions['Ctag']['subsections'];
+				var sRates = $('#analog-samplerate').children("option");
+				for (var i = 0; i < sRates.length; i++) {
+					var rate = sRates[i].innerHTML;
+					if (rate == '88200') {
+						sRates[i].remove();
+						$("#analog-channels option[value='2']").remove();
+					} else if (rate == "44100") {
+						sRates[i].innerHTML = "48000";
+					}
+				}
+			} else {
+				exceptions['sections'] = settingExceptions['Bela']['sections'];
+				exceptions['subsections'] = settingExceptions['Bela']['subsections'];
+			}
+			for (var e in exceptions['subsections']) {
+				$('#' + exceptions['subsections'][e]).parent().parent().css('display', 'none');
+			}
+			for (var e in exceptions['sections']) {
+				$('.' + exceptions['sections'][e]).css('display', 'none');
+			}
+		}
 	}]);
 
 	return SettingsView;
@@ -3545,7 +3638,7 @@ var TabView = function (_View) {
 	function TabView() {
 		_classCallCheck(this, TabView);
 
-		// open/close tabs 
+		// open/close tabs
 		var _this = _possibleConstructorReturn(this, (TabView.__proto__ || Object.getPrototypeOf(TabView)).call(this, 'tab'));
 
 		$('#flexit').on('click', function () {
@@ -3637,6 +3730,7 @@ var TabView = function (_View) {
 		_this.on('toggle', function () {
 			if (_tabsOpen) _this.closeTabs();else _this.openTabs();
 		});
+		_this.on('boardString', _this._boardString);
 
 		return _this;
 	}
@@ -3678,6 +3772,24 @@ var TabView = function (_View) {
 		value: function getOpenTab() {
 			if (!_tabsOpen) return false;
 			return $('[type=radio]:checked ~ label').prop('for');
+		}
+	}, {
+		key: '_boardString',
+		value: function _boardString(data) {
+			var boardString;
+			if (data && data.trim) boardString = data.trim();else return;
+
+			if (boardString === 'BelaMini') {
+				$('#pin_diagram_object').prop('data', 'diagram_mini.html');
+			} else if (boardString === 'CtagFace') {
+				$('#pin_diagram_object').prop('data', 'diagram_ctag_FACE.html');
+			} else if (boardString === 'CtagBeast') {
+				$('#pin_diagram_object').prop('data', 'diagram_ctag_BEAST.html');
+			} else if (boardString === 'CtagFaceBela') {
+				$('#pin_diagram_object').prop('data', 'diagram_ctag_BELA.html');
+			} else if (boardString === 'CtagBeastBela') {
+				$('#pin_diagram_object').prop('data', 'diagram_ctag_BEAST_BELA.html');
+			}
 		}
 	}]);
 
@@ -4936,6 +5048,5 @@ function sanitise(name) {
 module.exports.sanitise = sanitise;
 
 },{}]},{},[16])
-
 
 //# sourceMappingURL=bundle.js.map

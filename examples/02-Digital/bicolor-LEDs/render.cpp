@@ -25,9 +25,9 @@ The Bela software is distributed under the GNU Lesser General Public License
 #include <Bela.h>
 
 const int numPins = 4;
-int pins[numPins] = {P8_07, P8_08, P8_09, P8_10};
-bool useHardwarePwm = false; // if you want to use hardware PWM, check out the help text at the bottom
-int softPwmPin = P8_11;
+int pins[numPins] = {0, 1, 2, 3}; // Digital pins 0 to 3
+bool useHardwarePwm = false; // if you want to use hardware PWM, check out the help text at the bottom - check the pin diagram in the IDE
+int softPwmPin = 4; // Digital pin 4 - check the pin diagram in the IDE
 int period = 176; // duration (in samples) of a "brightness period", affects resolution of dimming. Larger values will cause flickering.
 bool useSequencer = true; // if disabled, control the brightness of each LED from the respective analog input
 
@@ -78,15 +78,29 @@ void render(BelaContext *context, void *userData)
 		// read the analog input at block rate to determine each LED brightness
 		for(unsigned int n = 0; n < numPins; ++n)
 		{
-			brightness[n][0] = analogRead(context, 0, n * 2) / 0.84f;
-			brightness[n][1] = analogRead(context, 0, n * 2 + 1) / 0.84f;
+			if(context->analogInChannels >= n * 2 + 1)
+			{
+				brightness[n][0] = analogRead(context, 0, n * 2) / 0.84f;
+				brightness[n][1] = analogRead(context, 0, n * 2 + 1) / 0.84f;
+			} else {
+				brightness[n][0] = 1;
+				brightness[n][1] = 1;
+			}
 		}
 	} else {
 		// use the step sequencer
 		static int step = 0;
 		static int stepCounter = 0;
-		float stepLength = analogRead(context, 0, 0) * context->digitalSampleRate;
-		float masterBrightness = analogRead(context, 0, 1) / 0.84f;
+		float stepLength;
+		float masterBrightness;
+		if(context->analogInChannels >= 1)
+		{
+			stepLength = analogRead(context, 0, 0) * context->digitalSampleRate;
+			masterBrightness = analogRead(context, 0, 1) / 0.84f;
+		} else {
+			stepLength = 0.5f * context->digitalSampleRate;
+			masterBrightness = 1;
+		}
 		if(stepCounter >= stepLength)
 		{
 			// select the next step
@@ -207,7 +221,7 @@ the overall brightness.
 When `useSequencer = false`, then each of the analogIns affects the brightness of the 
 corresponding LED.
 
-To use a hardware PWM, e.g.: on P9_14 :
+To use a hardware PWM, e.g.: on P9_14:
 \code
 cp MY-PWM-01-00A0.dtbo /lib/firmware
 echo MY-PWM-01 > $SLOTS

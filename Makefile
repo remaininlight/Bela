@@ -20,7 +20,7 @@
 .DEFAULT_GOAL := Bela
 
 AT?=@
-NO_PROJECT_TARGETS=help coreclean distclean stop nostartup connect_startup connect idestart idestop idestartup idenostartup ideconnect scsynthstart scsynthstop scsynthconnect scsynthstartup scsynthnostartup update checkupdate updateunsafe lib
+NO_PROJECT_TARGETS=help coreclean distclean startup startuploop stopstartup stoprunning stop nostartup connect_startup connect idestart idestop idestartup idenostartup ideconnect scsynthstart scsynthstop scsynthconnect scsynthstartup scsynthnostartup update checkupdate updateunsafe lib lib/libbela.so lib/libbelaextra.so lib/libbela.a lib/libbelaextra.a csoundstart
 NO_PROJECT_TARGETS_MESSAGE=PROJECT or EXAMPLE should be set for all targets except: $(NO_PROJECT_TARGETS)
 # list of targets that automatically activate the QUIET=true flag
 QUIET_TARGETS=runide
@@ -74,7 +74,7 @@ endif # ifndef PROJECT
 COMMAND_LINE_OPTIONS := --pru-file $(BELA_DIR)/pru_rtaudio.bin $(COMMAND_LINE_OPTIONS)
 run: pru_rtaudio.bin
 else
-build/core/PRU.o: include/pru_rtaudio_bin.h
+build/core/PruBinary.o: build/pru/pru_rtaudio_bin.h build/pru/pru_rtaudio_irq_bin.h
 endif #ifeq($(RUN_WITH_PRU_BIN),true)
 
 ifdef PROJECT
@@ -92,6 +92,7 @@ RUN_PREREQUISITES=
 RUN_FILE?=$(PROJECT_DIR)/run.sh
 SUPERCOLLIDER_FILE=$(PROJECT_DIR)/_main.scd
 LIBPD_FILE=$(PROJECT_DIR)/_main.pd
+CSOUND_FILE=$(PROJECT_DIR)/_main.csd
 HAS_RUN_FILE=false
 
 FILE_LIST:= $(wildcard $(PROJECT_DIR)/*)
@@ -122,8 +123,14 @@ else
 ifeq ($(filter $(LIBPD_FILE),$(FILE_LIST)),$(LIBPD_FILE))
 PROJECT_TYPE=libpd
 else
+ifeq ($(filter $(CSOUND_FILE),$(FILE_LIST)),$(CSOUND_FILE))
+PROJECT_TYPE=cs
+SHOULD_BUILD=false
+RUN_PREREQUISITES+=lib
+else
 ifneq ($(filter %.c %.cpp %.cc,$(FILE_LIST)),)
 PROJECT_TYPE=cpp
+endif
 endif
 endif
 endif
@@ -137,12 +144,16 @@ $(error Invalid/empty project. A project needs to have at least one .cpp or .c o
 endif
 endif
 
-ifeq ($(SHOULD_BUILD),true)
-#create build directories
-$(shell mkdir -p $(PROJECT_DIR)/build build/core )
-endif
-
 endif # ifdef PROJECT
+
+BUILD_DIRS=build/core build/pru
+ifneq ($(PROJECT_DIR),)
+ifeq ($(SHOULD_BUILD),true)
+BUILD_DIRS+=$(PROJECT_DIR)/build
+endif
+endif
+#create build directories, should probably be conditional to PROJECT or lib
+$(shell mkdir -p  $(BUILD_DIRS) lib)
 
 OUTPUT_FILE?=$(PROJECT_DIR)/$(PROJECT)
 RUN_FROM?=$(PROJECT_DIR)
@@ -153,7 +164,11 @@ ifeq ($(PROJECT_TYPE),sc)
 SCLANG_FIFO=/tmp/sclangfifo
 RUN_COMMAND?=bash -c 'rm -rf $(SCLANG_FIFO) && mkfifo $(SCLANG_FIFO) && sclang $(SUPERCOLLIDER_FILE) <> $(SCLANG_FIFO)'
 else
+ifeq ($(PROJECT_TYPE),cs)
+RUN_COMMAND?=bash -c 'belacsound --csd=$(CSOUND_FILE) 2>&1'
+else
 RUN_COMMAND?=$(OUTPUT_FILE) $(COMMAND_LINE_OPTIONS)
+endif
 endif
 endif
 
@@ -161,27 +176,55 @@ RUN_IDE_COMMAND?=PATH=$$PATH:/usr/local/bin/ stdbuf -i0 -o0 -e0 $(RUN_COMMAND)
 BELA_AUDIO_THREAD_NAME?=bela-audio 
 BELA_IDE_HOME?=/root/Bela/IDE
 XENO_CONFIG=/usr/xenomai/bin/xeno-config
+XENOMAI_SKIN=posix
 
 # Find out what system we are running on and set system-specific variables
+# We cache these in $(SYSTEM_SPECIFIC_MAKEFILE) after every boot
+SYSTEM_SPECIFIC_MAKEFILE=/tmp/BelaMakefile.inc
+-include $(SYSTEM_SPECIFIC_MAKEFILE)
+ifeq ($(DEBIAN_VERSION),)
+# If they are not there, let's go find out ...
 DEBIAN_VERSION=$(shell grep "VERSION=" /etc/os-release | sed "s/.*(\(.*\)).*/\1/g")
 # Lazily, let's assume if we are not on 2.6 we are on 3. I sincerely hope we will survive till Xenomai 4 to see this fail
 XENOMAI_VERSION=$(shell $(XENO_CONFIG) --version | grep -o "2\.6" || echo "3")
-ifeq ($(XENOMAI_VERSION),2.6)
-  XENOMAI_SKIN=posix
-else
-  XENOMAI_SKIN=posix
-endif
-ifeq ($(AT),)
-  $(info Running on __$(DEBIAN_VERSION)__ with Xenomai __$(XENOMAI_VERSION)__, skin __$(XENOMAI_SKIN)__)
-endif
 
 ifeq ($(XENOMAI_VERSION),2.6)
 XENOMAI_MAJOR=2
+endif
+ifeq ($(XENOMAI_VERSION),3)
+XENOMAI_MAJOR=3
+endif
+
+# Xenomai flags
+DEFAULT_XENOMAI_CFLAGS := $(shell $(XENO_CONFIG) --skin=$(XENOMAI_SKIN) --cflags)
+DEFAULT_XENOMAI_CFLAGS += -DXENOMAI_SKIN_$(XENOMAI_SKIN) -DXENOMAI_MAJOR=$(XENOMAI_MAJOR)
+# Cleaning up any `pie` introduced because of gcc 6.3, as it would confuse clang
+DEFAULT_XENOMAI_CFLAGS := $(filter-out -no-pie, $(DEFAULT_XENOMAI_CFLAGS))
+DEFAULT_XENOMAI_CFLAGS := $(filter-out -fno-pie, $(DEFAULT_XENOMAI_CFLAGS))
+SED_REMOVE_WRAPPERS_REGEX=sed "s/-Wl,@[A-Za-z_/]*.wrappers\>//g"
+ifeq ($(XENOMAI_VERSION),2.6)
+  DEFAULT_XENOMAI_LDFLAGS := $(shell $(XENO_CONFIG) --skin=$(XENOMAI_SKIN) --ldflags | $(SED_REMOVE_WRAPPERS_REGEX))
+else
+  DEFAULT_XENOMAI_LDFLAGS := $(shell $(XENO_CONFIG) --skin=$(XENOMAI_SKIN) --ldflags --no-auto-init | $(SED_REMOVE_WRAPPERS_REGEX))
+endif
+DEFAULT_XENOMAI_LDFLAGS := $(filter-out -no-pie, $(DEFAULT_XENOMAI_LDFLAGS))
+DEFAULT_XENOMAI_LDFLAGS := $(filter-out -fno-pie, $(DEFAULT_XENOMAI_LDFLAGS))
+# remove posix wrappers if present: explicitly call __wrap_pthread_... when needed
+DEFAULT_XENOMAI_LDFLAGS := $(filter-out -Wlusr/xenomai/lib/cobalt.wrappers, $(DEFAULT_XENOMAI_LDFLAGS))
+
+#... and cache them to the file
+$(shell printf "DEBIAN_VERSION=$(DEBIAN_VERSION)\nXENOMAI_VERSION=$(XENOMAI_VERSION)\nDEFAULT_XENOMAI_CFLAGS=$(DEFAULT_XENOMAI_CFLAGS)\nDEFAULT_XENOMAI_LDFLAGS=$(DEFAULT_XENOMAI_LDFLAGS)\nXENOMAI_MAJOR=$(XENOMAI_MAJOR)\n" > $(SYSTEM_SPECIFIC_MAKEFILE) )
+endif  # ifeq ($(DEBIAN_VERSION),)
+
+ifeq ($(AT),)
+  $(info Running on __$(DEBIAN_VERSION)__ with Xenomai __$(XENOMAI_VERSION)__)
+endif
+
+ifeq ($(XENOMAI_VERSION),2.6)
 XENOMAI_STAT_PATH=/proc/xenomai/stat
 LIBPD_LIBS=-lpd -lpthread_rt
 endif
 ifeq ($(XENOMAI_VERSION),3)
-XENOMAI_MAJOR=3
 XENOMAI_STAT_PATH=/proc/xenomai/sched/stat
 LIBPD_LIBS=-lpd -lpthread
 endif
@@ -225,38 +268,8 @@ endif
 QUIET?=false
 
 RM := rm -rf
-STATIC_LIBS := ./lib/libprussdrv.a ./lib/libNE10.a ./lib/libmathneon.a
 
-ifeq ($(PROJECT_TYPE),libpd)
-  # check if ldconfig knows about libpd
-  TEST_LIBPD := $(shell ldconfig -p | grep "libpd\.so")
-  ifneq ($(strip $(TEST_LIBPD)), )
-    # if ldconfig knows about libpd, link it in.
-    LIBS += $(LIBPD_LIBS)
-  else # Or print a "meaningful" error
-    $(error "Project $(PROJECT_NAME) was detected as a Pd project, but no libpd is available on the system.")
-  endif
-endif
-
-
-INCLUDES := -I$(PROJECT_DIR) -I./include -I/usr/include/
-# Xenomai flags
-DEFAULT_XENOMAI_CFLAGS := $(shell $(XENO_CONFIG) --skin=$(XENOMAI_SKIN) --cflags)
-DEFAULT_XENOMAI_CFLAGS += -DXENOMAI_SKIN_$(XENOMAI_SKIN) -DXENOMAI_MAJOR=$(XENOMAI_MAJOR)
-# Cleaning up any `pie` introduced because of gcc 6.3, as it would confuse clang
-DEFAULT_XENOMAI_CFLAGS := $(filter-out -no-pie, $(DEFAULT_XENOMAI_CFLAGS))
-DEFAULT_XENOMAI_CFLAGS := $(filter-out -fno-pie, $(DEFAULT_XENOMAI_CFLAGS))
-SED_REMOVE_WRAPPERS_REGEX=sed "s/-Wl,@[A-Za-z_/]*.wrappers\>//g"
-ifeq ($(XENOMAI_VERSION),2.6)
-  DEFAULT_XENOMAI_LDFLAGS := $(shell $(XENO_CONFIG) --skin=$(XENOMAI_SKIN) --ldflags | $(SED_REMOVE_WRAPPERS_REGEX))
-else
-  DEFAULT_XENOMAI_LDFLAGS := $(shell $(XENO_CONFIG) --skin=$(XENOMAI_SKIN) --ldflags --no-auto-init | $(SED_REMOVE_WRAPPERS_REGEX))
-endif
-DEFAULT_XENOMAI_LDFLAGS := $(filter-out -no-pie, $(DEFAULT_XENOMAI_LDFLAGS))
-DEFAULT_XENOMAI_LDFLAGS := $(filter-out -fno-pie, $(DEFAULT_XENOMAI_LDFLAGS))
-# remove posix wrappers if present: explicitly call __wrap_pthread_... when needed
-DEFAULT_XENOMAI_LDFLAGS := $(filter-out -Wlusr/xenomai/lib/cobalt.wrappers, $(DEFAULT_XENOMAI_LDFLAGS))
-
+INCLUDES := -I$(PROJECT_DIR) -I./include -I./build/pru/
 ifeq ($(XENOMAI_VERSION),2.6)
   BELA_USE_DEFINE=BELA_USE_POLL
 endif
@@ -264,10 +277,17 @@ ifeq ($(XENOMAI_VERSION),3)
   BELA_USE_DEFINE=BELA_USE_RTDM
 endif
 
-DEFAULT_COMMON_FLAGS := $(DEFAULT_XENOMAI_CFLAGS) -O3 -march=armv7-a -mtune=cortex-a8 -mfloat-abi=hard -mfpu=neon -ftree-vectorize -ffast-math -DNDEBUG -D$(BELA_USE_DEFINE)
+DEFAULT_COMMON_FLAGS := $(DEFAULT_XENOMAI_CFLAGS) -O3 -march=armv7-a -mtune=cortex-a8 -mfloat-abi=hard -mfpu=neon -ftree-vectorize -ffast-math -DNDEBUG -D$(BELA_USE_DEFINE) -I$(BELA_DIR)/resources/$(DEBIAN_VERSION)/include
 DEFAULT_CPPFLAGS := $(DEFAULT_COMMON_FLAGS) -std=c++11 -Wno-varargs
 DEFAULT_CFLAGS := $(DEFAULT_COMMON_FLAGS) -std=gnu11
-LDFLAGS += $(DEFAULT_XENOMAI_LDFLAGS) -Llib/ -lasound -lsndfile -lseasocks
+BELA_LDFLAGS = -Llib/
+BELA_CORE_LDLIBS = $(DEFAULT_XENOMAI_LDFLAGS) -lprussdrv -lstdc++ # libraries needed by core code (libbela.so)
+BELA_EXTRA_LDLIBS =$(DEFAULT_XENOMAI_LDFLAGS) -lasound -lseasocks -lNE10 -lmathneon # additional libraries needed by extra code (libbelaextra.so)
+BELA_EXAMPLE_LIBS = -lsndfile # libraries commonly used by examples
+BELA_LDLIBS = $(BELA_CORE_LDLIBS) $(BELA_EXTRA_LDLIBS) $(BELA_EXAMPLE_LIBS)
+ifeq ($(PROJECT_TYPE),libpd)
+BELA_LDLIBS += $(LIBPD_LIBS)
+endif
 
 ifndef COMPILER
 # check whether clang is installed
@@ -328,7 +348,7 @@ ALL_DEPS += $(addprefix build/core/,$(notdir $(CORE_C_SRCS:.c=.d)))
 
 CORE_CPP_SRCS = $(filter-out core/default_main.cpp core/default_libpd_render.cpp, $(wildcard core/*.cpp))
 CORE_OBJS := $(CORE_OBJS) $(addprefix build/core/,$(notdir $(CORE_CPP_SRCS:.cpp=.o)))
-CORE_CORE_OBJS := build/core/RTAudio.o build/core/PRU.o build/core/RTAudioCommandLine.o build/core/I2c_Codec.o build/core/math_runfast.o build/core/GPIOcontrol.o
+CORE_CORE_OBJS := build/core/RTAudio.o build/core/PRU.o build/core/RTAudioCommandLine.o build/core/I2c_Codec.o build/core/Spi_Codec.o build/core/math_runfast.o build/core/GPIOcontrol.o build/core/PruBinary.o build/core/board_detect.o
 EXTRA_CORE_OBJS := $(filter-out $(CORE_CORE_OBJS), $(CORE_OBJS))
 ALL_DEPS += $(addprefix build/core/,$(notdir $(CORE_CPP_SRCS:.cpp=.d)))
 
@@ -383,7 +403,7 @@ build/core/%.o: ./core/%.c
 build/core/%.o: ./core/%.cpp
 	$(AT) echo 'Building $(notdir $<)...'
 #	$(AT) echo 'Invoking: C++ Compiler $(CXX)'
-	$(AT) $(CXX) $(SYNTAX_FLAG) $(INCLUDES) $(DEFAULT_CPPFLAGS) -Wall -c -fmessage-length=0 -U_FORTIFY_SOURCE -MMD -MP -MF"$(@:%.o=%.d)" -o "$@" "$<" $(CPPFLAGS) -fPIC -Wno-unused-function
+	$(AT) $(CXX) $(SYNTAX_FLAG) $(INCLUDES) $(DEFAULT_CPPFLAGS) -Wall -c -fmessage-length=0 -U_FORTIFY_SOURCE -MMD -MP -MF"$(@:%.o=%.d)" -o "$@" "$<" $(CPPFLAGS) -fPIC -Wno-unused-function -Wno-unused-const-variable
 	$(AT) echo ' ...done'
 	$(AT) echo ' '
 
@@ -395,16 +415,16 @@ build/core/%.o: ./core/%.S
 	$(AT) echo ' ...done'
 	$(AT) echo ' '
 
-pru_rtaudio.bin: pru_rtaudio.p
+%.bin: pru/%.p
 	$(AT) echo 'Building $<...'
-	$(AT) pasm -V2 -b pru_rtaudio.p > /dev/null
+	$(AT) pasm -V2 -b "$<" > /dev/null
 	$(AT) echo ' ...done'
 	$(AT) echo ' '
 
-include/pru_rtaudio_bin.h: pru_rtaudio.p
+build/pru/%_bin.h: pru/%.p
 	$(AT) echo 'Building $<...'
-	$(AT) pasm -V2 -L -c pru_rtaudio.p > /dev/null
-	$(AT) mv pru_rtaudio_bin.h include/
+	$(AT) pasm -V2 -L -c "$<" > /dev/null
+	$(AT) mv "$(@:build/pru/%=%)" build/pru/
 	$(AT) echo ' ...done'
 	$(AT) echo ' '
 
@@ -455,7 +475,7 @@ else
 # function, and conditionally call one of two recursive make targets depending on whether
 # we want to link in the default main file or not. The kludge is the mess of a shell script
 # line below. Surely there's a better way to do this?
-$(OUTPUT_FILE): $(CORE_ASM_OBJS) $(CORE_OBJS) $(PROJECT_OBJS) $(STATIC_LIBS) $(DEFAULT_MAIN_OBJS) $(DEFAULT_PD_OBJS)
+$(OUTPUT_FILE): $(CORE_ASM_OBJS) $(CORE_OBJS) $(PROJECT_OBJS) $(DEFAULT_MAIN_OBJS) $(DEFAULT_PD_OBJS)
 	$(eval DEFAULT_MAIN_CONDITIONAL :=\
 	    $(shell bash -c '[ `nm -C /dev/null $(PROJECT_OBJS) 2>/dev/null | grep -w T | grep -w main | wc -l` == '0' ] && echo "$(DEFAULT_MAIN_OBJS)" || : '))
 ifeq ($(PROJECT_TYPE),libpd)
@@ -464,7 +484,7 @@ ifeq ($(PROJECT_TYPE),libpd)
 	    $(shell bash -c '{ [ `nm -C /dev/null $(PROJECT_OBJS) 2>/dev/null | grep -w T | grep "\<render\>" | wc -l` -eq 0 ]; } && echo '$(DEFAULT_PD_OBJS)' || : ' ))
 endif # ifeq ($(PROJECT_TYPE),libpd)
 	$(AT) echo 'Linking...'
-	$(AT) $(CXX) $(SYNTAX_FLAG) $(LDFLAGS) -pthread -Wpointer-arith -o "$(PROJECT_DIR)/$(PROJECT)" $(CORE_ASM_OBJS) $(CORE_OBJS) $(DEFAULT_MAIN_CONDITIONAL) $(DEFAULT_PD_CONDITIONAL) $(ASM_OBJS) $(C_OBJS) $(CPP_OBJS) $(STATIC_LIBS) $(LIBS) $(LDLIBS)
+	$(AT) $(CXX) $(SYNTAX_FLAG) $(BELA_LDFLAGS) $(LDFLAGS) -pthread -o "$(PROJECT_DIR)/$(PROJECT)" $(CORE_ASM_OBJS) $(CORE_OBJS) $(DEFAULT_MAIN_CONDITIONAL) $(DEFAULT_PD_CONDITIONAL) $(ASM_OBJS) $(C_OBJS) $(CPP_OBJS) $(LDLIBS) $(BELA_LDLIBS)
 	$(AT) echo ' ...done'
 endif # ifeq ($(SHOULD_BUILD),false)
 
@@ -517,18 +537,21 @@ nostartup:
 	$(AT) $(BELA_DISABLE_STARTUP_COMMAND)
 
 startuploop: ## Makes PROJECT run at startup and restarts it if it crashes
+ifneq ($(PROJECT),)
 startuploop: Bela
+endif
 	$(AT) echo "Enabling Bela at startup in a loop..."
 	$(AT) $(BELA_ENABLE_STARTUP_COMMAND)
 
 startup: ## Same as startuploop
 startup: startuploop # compatibility only
 
-stop: ## Stops any Bela program that is currently running
-stop:
+stopstartup: ## stop the system service that ran Bela at startup
 ifeq ($(DEBIAN_VERSION),stretch)
 	$(AT) systemctl stop bela_startup || true
 endif
+
+stoprunning: ## Stops a Bela program that is currently running
 	$(AT) PID=`grep $(BELA_AUDIO_THREAD_NAME) $(XENOMAI_STAT_PATH) | cut -d " " -f 5 | sed s/\s//g`; if [ -z $$PID ]; then [ $(QUIET) = true ] || echo "No process to kill"; else [  $(QUIET) = true  ] || echo "Killing old Bela process $$PID"; kill -2 $$PID; sleep 0.2; kill -9 $$PID 2> /dev/null; fi; screen -X -S $(SCREEN_NAME) quit > /dev/null; exit 0;
 # take care of stale sclang / scsynth processes
 ifeq ($(PROJECT_TYPE),sc)
@@ -539,6 +562,9 @@ else
 # audio thread has been killed above
 	$(AT) killall scsynth 2>/dev/null& killall sclang 2>/dev/null& true
 endif
+
+stop: ## Stops any system service and Bela program that is currently running
+stop: stopstartup stoprunning
 
 ifeq ($(DEBIAN_VERSION),stretch)
 connect_startup: ## Connects to Bela program running at startup
@@ -572,6 +598,9 @@ idenostartup: ## Disables the IDE at startup
 
 ideconnect: ## Brings up the IDE's log
 	$(AT) $(BELA_IDE_CONNECT_COMMAND)
+
+csoundstart: # Start csound
+	$(AT) screen -r -S $(RUN_COMMAND)
 
 SCSYNTH_SCREEN_NAME=scsynth
 SCSYNTH_RUN_COMMAND=screen -S $(SCSYNTH_SCREEN_NAME) -d -m scsynth $(SC_CL)
@@ -666,7 +695,8 @@ LIB_EXTRA_A = libbelaextra.a
 LIB_EXTRA_OBJS = $(EXTRA_CORE_OBJS) build/core/GPIOcontrol.o
 lib/$(LIB_EXTRA_SO): $(LIB_EXTRA_OBJS)
 	$(AT) echo Building lib/$(LIB_EXTRA_SO)
-	$(AT) $(CXX) -shared -Wl,-soname,$(LIB_EXTRA_SO) $(LDLIBS) -o lib/$(LIB_EXTRA_SO) $(LIB_EXTRA_OBJS) $(LDFLAGS)
+	$(AT) $(CXX) $(BELA_LDFLAGS) $(LDFLAGS) -shared -Wl,-soname,$(LIB_EXTRA_SO) -o lib/$(LIB_EXTRA_SO) $(LIB_EXTRA_OBJS) $(LDLIBS) $(BELA_EXTRA_LDLIBS)
+	$(AT) ldconfig $(BELA_DIR)/$@
 
 lib/$(LIB_EXTRA_A): $(LIB_EXTRA_OBJS) $(PRU_OBJS) $(LIB_DEPS)
 	$(AT) echo Building lib/$(LIB_EXTRA_A)
@@ -674,11 +704,11 @@ lib/$(LIB_EXTRA_A): $(LIB_EXTRA_OBJS) $(PRU_OBJS) $(LIB_DEPS)
 
 LIB_SO =libbela.so
 LIB_A = libbela.a
-LIB_OBJS = $(CORE_CORE_OBJS) build/core/AuxiliaryTasks.o lib/libprussdrv.a build/core/Gpio.o
+LIB_OBJS = $(CORE_CORE_OBJS) build/core/AuxiliaryTasks.o build/core/Gpio.o
 lib/$(LIB_SO): $(LIB_OBJS)
 	$(AT) echo Building lib/$(LIB_SO)
-	$(AT) $(CXX) -shared -Wl,-soname,$(LIB_SO) $(LDLIBS) -o lib/$(LIB_SO) $(LIB_OBJS) $(LDFLAGS)
-	$(AT) ldconfig
+	$(AT) $(CXX) $(BELA_LDFLAGS) $(LDFLAGS) -shared -Wl,-soname,$(LIB_SO) $(LDLIBS) -o lib/$(LIB_SO) $(LIB_OBJS) $(LDLIBS) $(BELA_CORE_LDLIBS)
+	$(AT) ldconfig $(BELA_DIR)/$@
 
 lib/$(LIB_A): $(LIB_OBJS) $(PRU_OBJS) $(LIB_DEPS)
 	$(AT) echo Building lib/$(LIB_A)
@@ -691,7 +721,7 @@ HEAVY_SRC_TARGET_DIR=$(PROJECT_DIR)
 HEAVY_SRC_FILES=$(HEAVY_TMP_DIR)/*.cpp $(HEAVY_TMP_DIR)/*.c $(HEAVY_TMP_DIR)/*.hpp $(HEAVY_TMP_DIR)/*.h
 HEAVY_OBJ_TARGET_DIR=$(PROJECT_DIR)/build
 HEAVY_OBJ_FILES=$(HEAVY_TMP_DIR)/*.o
-heavy-unzip-archive:
+heavy-unzip-archive: stop
 	$(AT) [ -z "$(HEAVY_ARCHIVE)" ] && { echo "You should specify the path to the Heavy archive with HEAVY_ARCHIVE=" >&2; false; } || true
 	$(AT) [ -f "$(HEAVY_ARCHIVE)" ] || { echo "File $(HEAVY_ARCHIVE) not found" >&2; false; }
 	$(AT) rm -rf $(HEAVY_TMP_DIR)
@@ -708,4 +738,4 @@ heavy-unzip-archive:
 # If there is no render.cpp, copy the default Heavy one
 	$(AT) [ -f $(PROJECT_DIR)/render.cpp ] || { cp $(BELA_DIR)/scripts/hvresources/render.cpp $(PROJECT_DIR)/ 2> /dev/null || echo "No default render.cpp found on the board"; }
 
-.PHONY: all clean distclean help projectclean nostartup startup startuploop debug run runfg runscreen runscreenfg stop idestart idestop idestartup idenostartup ideconnect connect update checkupdate updateunsafe scsynthstart scsynthstop scsynthstartup scsynthnostartup scsynthconnect lib
+.PHONY: all clean distclean help projectclean nostartup startup startuploop debug run runfg runscreen runscreenfg stopstartup stoprunning stop idestart idestop idestartup idenostartup ideconnect connect update checkupdate updateunsafe csoundstart scsynthstart scsynthstop scsynthstartup scsynthnostartup scsynthconnect lib c

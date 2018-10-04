@@ -33,10 +33,10 @@ The Bela software is distributed under the GNU Lesser General Public License
 
 // Organised by display segments:
 // e d . X c g b X X X f a
-const int kPins[NUM_PINS] = {P8_07, P8_08, P8_09, P8_10, P8_11, P8_12,
-							 P8_15, P8_16, P8_27, P8_28, P8_29, P8_30};
 
-// Indices into the above array: pins 12, 9, 8, 6
+const int kPins[NUM_PINS] = {0, 1, 2, 3, 4, 5, 8, 9, 12, 13, 14, 15};
+
+// Indices into the above array
 const int kDigits[4] = {9, 8, 7, 3};
 
 int gCurrentlyDisplayingDigit = 0;
@@ -54,15 +54,6 @@ const unsigned char kPerimeter[6] = {0x01, 0x02, 0x04, 0x08, 0x10, 0x20};
 
 int gCharacterToDisplay[4] = {0, 0, 0, 0};
 	
-// setup() is called once before the audio rendering starts.
-// Use it to perform any initialisation and allocation which is dependent
-// on the period size or sample rate.
-//
-// userData holds an opaque pointer to a data structure that was passed
-// in from the call to initAudio().
-//
-// Return true on success; returning false halts the program.
-
 bool setup(BelaContext *context, void *userData)
 {	
 	// This project makes the assumption that the audio and digital
@@ -78,11 +69,6 @@ bool setup(BelaContext *context, void *userData)
 
 	return true;
 }
-
-// render() is called regularly at the highest priority by the audio engine.
-// Input and output are given from the audio hardware and the other
-// ADCs and DACs (if available). If only audio is available, numMatrixFrames
-// will be 0.
 
 void render(BelaContext *context, void *userData)
 {
@@ -132,9 +118,6 @@ void render(BelaContext *context, void *userData)
 		}
 	}
 }
-
-// cleanup() is called once at the end, after the audio has stopped.
-// Release any resources that were allocated in setup().
 
 void cleanup(BelaContext *context, void *userData)
 {

@@ -28,19 +28,108 @@ The Bela software is distributed under the GNU Lesser General Public License
 #include <Heavy_bela.h>
 #include <string.h>
 #include <stdlib.h>
-#include <string.h>
+#include <string>
+#include <sstream>
 #include <DigitalChannelManager.h>
+#include <algorithm>
 
-// Bela Midi
-static Midi midi;
-unsigned int hvMidiHashes[7];
+enum { minFirstDigitalChannel = 10 };
+
+static unsigned int gAudioChannelsInUse;
+static unsigned int gAnalogChannelsInUse;
+static unsigned int gDigitalChannelsInUse;
 unsigned int gScopeChannelsInUse;
+static unsigned int gChannelsInUse;
+static unsigned int gFirstAnalogChannel;
+static unsigned int gFirstDigitalChannel;
+static unsigned int gDigitalChannelOffset;
+static unsigned int gFirstScopeChannel;
+
+static unsigned int gDigitalSigInChannelsInUse;
+static unsigned int gDigitalSigOutChannelsInUse;
+
 float* gScopeOut;
 // Bela Scope
 static Scope* scope = NULL;
 static char multiplexerArray[] = {"bela_multiplexer"};
 static int multiplexerArraySize = 0;
 static bool pdMultiplexerActive = false;
+bool gDigitalEnabled = 0;
+
+// Bela Midi
+unsigned int hvMidiHashes[7]; // heavy-specific
+static std::vector<Midi*> midi;
+std::vector<std::string> gMidiPortNames;
+
+void dumpMidi()
+{
+	if(midi.size() == 0)
+	{
+		printf("No MIDI device enabled\n");
+		return;
+	}
+	printf("The following MIDI devices are enabled:\n");
+	printf("%4s%20s %3s %3s %s\n",
+			"Num",
+			"Name",
+			"In",
+			"Out",
+			"Pd channels"
+	      );
+	for(unsigned int n = 0; n < midi.size(); ++n)
+	{
+		printf("[%2d]%20s %3s %3s (%d-%d)\n",
+			n,
+			gMidiPortNames[n].c_str(),
+			midi[n]->isInputEnabled() ? "x" : "_",
+			midi[n]->isOutputEnabled() ? "x" : "_",
+			n * 16 + 1,
+			n * 16 + 16
+		);
+	}
+}
+
+Midi* openMidiDevice(std::string name, bool verboseSuccess = false, bool verboseError = false)
+{
+	Midi* newMidi;
+	newMidi = new Midi();
+	newMidi->readFrom(name.c_str());
+	newMidi->writeTo(name.c_str());
+	newMidi->enableParser(true);
+	if(newMidi->isOutputEnabled())
+	{
+		if(verboseSuccess)
+			printf("Opened MIDI device %s as output\n", name.c_str());
+	}
+	if(newMidi->isInputEnabled())
+	{
+		if(verboseSuccess)
+			printf("Opened MIDI device %s as input\n", name.c_str());
+	}
+	if(!newMidi->isInputEnabled() && !newMidi->isOutputEnabled())
+	{
+		if(verboseError)
+			fprintf(stderr, "Failed to open  MIDI device %s\n", name.c_str());
+		return nullptr;
+	} else {
+		return newMidi;
+	}
+}
+
+static unsigned int getPortChannel(int* channel){
+	unsigned int port = 0;
+	while(*channel > 16){
+		*channel -= 16;
+		port += 1;
+	}
+	if(port >= midi.size()){
+		// if the port number exceeds the number of ports available, send out
+		// of the first port
+		rt_fprintf(stderr, "Port out of range, using port 0 instead\n");
+		port = 0;
+	}
+	return port;
+}
 
 /*
  *	HEAVY CONTEXT & BUFFERS
@@ -57,8 +146,6 @@ float gInverseSampleRate;
  *	HEAVY FUNCTIONS
  */
 
-// TODO: rename this
-#define LIBPD_DIGITAL_OFFSET 11 // digitals are preceded by 2 audio and 8 analogs (even if using a different number of analogs)
 
 void printHook(HeavyContextInterface *context, const char *printLabel, const char *msgString, const HvMessage *msg) {
 	const double timestampSecs = ((double) hv_msg_getTimestamp(msg)) / hv_getSampleRate(context);
@@ -74,13 +161,16 @@ void sendDigitalMessage(bool state, unsigned int delay, void* receiverName){
 //	rt_printf("%s: %d\n", (char*)receiverName, state);
 }
 
-// TODO: turn them into hv hashes and adjust sendDigitalMessage accordingly
-char hvDigitalInHashes[16][21]={
-	{"bela_digitalIn11"},{"bela_digitalIn12"},{"bela_digitalIn13"},{"bela_digitalIn14"},{"bela_digitalIn15"},
-	{"bela_digitalIn16"},{"bela_digitalIn17"},{"bela_digitalIn18"},{"bela_digitalIn19"},{"bela_digitalIn20"},
-	{"bela_digitalIn21"},{"bela_digitalIn22"},{"bela_digitalIn23"},{"bela_digitalIn24"},{"bela_digitalIn25"},
-	{"bela_digitalIn26"}
-};
+
+std::vector<std::string> gHvDigitalInHashes;
+void generateDigitalNames(unsigned int numDigitals, unsigned int digitalOffset, std::vector<std::string>& receiverInputNames)
+{
+	std::string inBaseString = "bela_digitalIn";
+	for(unsigned int i = 0; i<numDigitals; i++)
+	{
+		receiverInputNames.push_back(inBaseString + std::to_string(i+digitalOffset));
+	}
+}
 
 // For a message to be received here, you need to use the following syntax in Pd:
 // [send receiverName @hv_param]
@@ -102,9 +192,9 @@ static void sendHook(
 				// quickly convert the suffix to integer, assuming they are numbers, avoiding to call atoi
 				int receiver = ((receiverName[prefixLength] - '0') * 10);
 				receiver += (receiverName[prefixLength+1] - '0');
-				unsigned int channel = receiver - LIBPD_DIGITAL_OFFSET; // go back to the actual Bela digital channel number
+				unsigned int channel = receiver - gDigitalChannelOffset; // go back to the actual Bela digital channel number
 				bool value = (hv_msg_getFloat(m, 0) != 0.0f);
-				if(channel < 16){ //16 is the hardcoded value for the number of digital channels
+				if(channel < gDigitalChannelsInUse){ //gDigitalChannelsInUse is the number of digital channels
 					dcm.setValue(channel, value);
 				}
 			}
@@ -114,90 +204,121 @@ static void sendHook(
 
 	// Bela digital initialization messages
 	switch (sendHash) {
+		case 0xfb212be8: { // bela_setMidi
+			if (!hv_msg_hasFormat(m, "sfff")) {
+				fprintf(stderr, "Wrong format for Bela_setMidi, expected:[hw 1 0 0(");
+				return;
+			}
+			const char* symbol = hv_msg_getSymbol(m, 0);
+			int num[3] = {0, 0, 0};
+			for(int n = 0; n < 3; ++n)
+			{
+				num[n] = hv_msg_getFloat(m, n + 1);
+			}
+			std::ostringstream deviceName;
+			deviceName << symbol << ":" << num[0] << "," << num[1] << "," << num[2];
+			printf("Adding Midi device: %s\n", deviceName.str().c_str());
+			Midi* newMidi = openMidiDevice(deviceName.str(), true, true);
+			if(newMidi)
+			{
+				midi.push_back(newMidi);
+				gMidiPortNames.push_back(deviceName.str());
+			}
+			dumpMidi();
+			break;
+		}
 		case 0x70418732: { // bela_setDigital
-			// Third argument (optional) can be ~ or sig for signal-rate, message-rate otherwise.
-			// [in 14 ~(
-			// |
-			// [s bela_setDigital]
-			// is signal("sig" or "~") or message("message", default) rate
-			bool isMessageRate = true; // defaults to message rate
-			bool direction = 0; // initialize it just to avoid the compiler's warning
-			bool disable = false;
-      if (!(hv_msg_isSymbol(m, 0) && hv_msg_isFloat(m, 1))) return;
-			const char *symbol = hv_msg_getSymbol(m, 0);
-
-			if(strcmp(symbol, "in") == 0){
-				direction = INPUT;
-			} else if(strcmp(symbol, "out") == 0){
-				direction = OUTPUT;
-			} else if(strcmp(symbol, "disable") == 0){
-				disable = true;
-			} else {
-				return;
-			}
-			int channel = hv_msg_getFloat(m, 1) - LIBPD_DIGITAL_OFFSET;
-			if(disable == true){
-				dcm.unmanage(channel);
-				return;
-			}
-			if(hv_msg_isSymbol(m, 2)){
-				const char *s = hv_msg_getSymbol(m, 2);
-				if(strcmp(s, "~") == 0  || strncmp(s, "sig", 3) == 0){
-					isMessageRate = false;
+			if(gDigitalEnabled)
+			{
+				// Third argument (optional) can be ~ or sig for signal-rate, message-rate otherwise.
+				// [in 14 ~(
+				// |
+				// [s bela_setDigital]
+				// is signal("sig" or "~") or message("message", default) rate
+				bool isMessageRate = true; // defaults to message rate
+				bool direction = 0; // initialize it just to avoid the compiler's warning
+				bool disable = false;
+				if (!(hv_msg_isSymbol(m, 0) && hv_msg_isFloat(m, 1))) return;
+				const char *symbol = hv_msg_getSymbol(m, 0);
+				if(strcmp(symbol, "in") == 0){
+					direction = INPUT;
+				} else if(strcmp(symbol, "out") == 0){
+					direction = OUTPUT;
+				} else if(strcmp(symbol, "disable") == 0){
+					disable = true;
+				} else {
+					return;
 				}
+				int channel = hv_msg_getFloat(m, 1) - gDigitalChannelOffset;
+				if(disable == true){
+					dcm.unmanage(channel);
+					return;
+				}
+				if(hv_msg_isSymbol(m, 2)){
+					const char *s = hv_msg_getSymbol(m, 2);
+					if(strcmp(s, "~") == 0  || strncmp(s, "sig", 3) == 0){
+						isMessageRate = false;
+					}
+				}
+				dcm.manage(channel, direction, isMessageRate);
 			}
-			dcm.manage(channel, direction, isMessageRate);
 			break;
 		}
 		case 0xEC6DA2AF: { // bela_noteout
 			if (!hv_msg_hasFormat(m, "fff")) return;
 			midi_byte_t pitch = (midi_byte_t) hv_msg_getFloat(m, 0);
 			midi_byte_t velocity = (midi_byte_t) hv_msg_getFloat(m, 1);
-			midi_byte_t channel = (midi_byte_t) hv_msg_getFloat(m, 2);
-			rt_printf("noteon: %d %d %d\n", channel, pitch, velocity);
-			midi.writeNoteOn(channel, pitch, velocity);
+			int channel = (midi_byte_t) hv_msg_getFloat(m, 2);
+			int port = getPortChannel(&channel);
+			rt_printf("noteon[%d]: %d %d %d\n", port, channel, pitch, velocity);
+			midi[port]->writeNoteOn(channel, pitch, velocity);
 			break;
 		}
 		case 0xD44F9083: { // bela_ctlout
 			if (!hv_msg_hasFormat(m, "fff")) return;
 			midi_byte_t value = (midi_byte_t) hv_msg_getFloat(m, 0);
 			midi_byte_t controller = (midi_byte_t) hv_msg_getFloat(m, 1);
-			midi_byte_t channel = (midi_byte_t) hv_msg_getFloat(m, 2);
-			rt_printf("controlchange: %d %d %d\n", channel, controller, value);
-			midi.writeControlChange(channel, controller, value);
+			int channel = (midi_byte_t) hv_msg_getFloat(m, 2);
+			int port = getPortChannel(&channel);
+			rt_printf("controlchange[%d]: %d %d %d\n", port, channel, controller, value);
+			midi[port]->writeControlChange(channel, controller, value);
 			break;
 		}
 		case 0x6A647C44: { // bela_pgmout
 			if (!hv_msg_hasFormat(m, "ff")) return;
 			midi_byte_t program = (midi_byte_t) hv_msg_getFloat(m, 0);
-			midi_byte_t channel = (midi_byte_t) hv_msg_getFloat(m, 1);
-			rt_printf("programchange: %d %d\n", channel, program);
-			midi.writeProgramChange(channel, program);
+			int channel = (midi_byte_t) hv_msg_getFloat(m, 1);
+			int port = getPortChannel(&channel);
+			rt_printf("programchange[%d]: %d %d\n", port, channel, program);
+			midi[port]->writeProgramChange(channel, program);
 			break;
 		}
 		case 0x545CDF50: { // bela_bendout
 			if (!hv_msg_hasFormat(m, "ff")) return;
 			unsigned int value = ((midi_byte_t) hv_msg_getFloat(m, 0)) + 8192;
-			midi_byte_t channel = (midi_byte_t) hv_msg_getFloat(m, 1);
-			rt_printf("pitchbend: %d %d\n", channel, value);
-			midi.writePitchBend(channel, value);
+			int channel = (midi_byte_t) hv_msg_getFloat(m, 1);
+			int port = getPortChannel(&channel);
+			rt_printf("pitchbend[%d]: %d %d\n", port, channel, value);
+			midi[port]->writePitchBend(channel, value);
 			break;
 		}
 		case 0xDE18F543: { // bela_touchout
 			if (!hv_msg_hasFormat(m, "ff")) return;
 			midi_byte_t pressure = (midi_byte_t) hv_msg_getFloat(m, 0);
-			midi_byte_t channel = (midi_byte_t) hv_msg_getFloat(m, 1);
-			rt_printf("channelPressure: %d %d\n", channel, pressure);
-			midi.writeChannelPressure(channel, pressure);
+			int channel = (midi_byte_t) hv_msg_getFloat(m, 1);
+			int port = getPortChannel(&channel);
+			rt_printf("channelPressure[%d]: %d %d\n", port, channel, pressure);
+			midi[port]->writeChannelPressure(channel, pressure);
 			break;
 		}
 		case 0xAE8E3B2D: { // bela_polytouchout
 			if (!hv_msg_hasFormat(m, "fff")) return;
 			midi_byte_t pitch = (midi_byte_t) hv_msg_getFloat(m, 0);
 			midi_byte_t pressure = (midi_byte_t) hv_msg_getFloat(m, 1);
-			midi_byte_t channel = (midi_byte_t) hv_msg_getFloat(m, 2);
-			rt_printf("polytouch: %d %d %d\n", channel, pitch, pressure);
-			midi.writePolyphonicKeyPressure(channel, pitch, pressure);
+			int channel = (midi_byte_t) hv_msg_getFloat(m, 2);
+			int port = getPortChannel(&channel);
+			rt_printf("polytouch[%d]: %d %d %d\n", port, channel, pitch, pressure);
+			midi[port]->writePolyphonicKeyPressure(channel, pitch, pressure);
 			break;
 		}
 		case 0x51CD8FE2: { // bela_midiout
@@ -205,7 +326,7 @@ static void sendHook(
 			midi_byte_t byte = (midi_byte_t) hv_msg_getFloat(m, 0);
 			int port = (int) hv_msg_getFloat(m, 1);
 			rt_printf("port: %d, byte: %d\n", port, byte);
-			midi.writeOutput(byte);
+			midi[port]->writeOutput(byte);
 			break;
 		}
 		default: break;
@@ -217,25 +338,30 @@ static void sendHook(
  * SETUP, RENDER LOOP & CLEANUP
  */
 
-// leaving this here, trying to come up with a coherent interface with libpd.
-// commenting them out so the compiler does not warn
-// 2 audio + (up to)8 analog + (up to) 16 digital + 4 scope outputs
-//static const unsigned int gChannelsInUse = 30;
-//static unsigned int gAnalogChannelsInUse = 8; // hard-coded for the moment, TODO: get it at run-time from hv_context
-//static const unsigned int gFirstAudioChannel = 0;
-//static const unsigned int gFirstAnalogChannel = 2;
-static const unsigned int gFirstDigitalChannel = 10;
-static const unsigned int gFirstScopeChannel = 26;
-static unsigned int gDigitalSigInChannelsInUse;
-static unsigned int gDigitalSigOutChannelsInUse;
 
 bool setup(BelaContext *context, void *userData)	{
-	if(context->audioInChannels != context->audioOutChannels ||
-			context->analogInChannels != context->analogOutChannels){
-		// It should actually work, but let's test it before releasing it!
-		fprintf(stderr, "Error: TODO: a different number of channels for inputs and outputs is not yet supported\n");
-		return false;
-	}
+
+	// Check if digitals are enabled
+	if(context->digitalFrames > 0 && context->digitalChannels > 0)
+		gDigitalEnabled = 1;
+
+	gAudioChannelsInUse = std::max(context->audioInChannels, context->audioOutChannels);
+	gAnalogChannelsInUse = std::max(context->analogInChannels, context->analogOutChannels);
+	gDigitalChannelsInUse = context->digitalChannels;
+
+	// Channel distribution
+	gFirstAnalogChannel = std::max(context->audioInChannels, context->audioOutChannels);
+	gFirstDigitalChannel = gFirstAnalogChannel + std::max(context->analogInChannels, context->analogOutChannels);
+	if(gFirstDigitalChannel < minFirstDigitalChannel)
+		gFirstDigitalChannel = minFirstDigitalChannel; //for backwards compatibility
+	gDigitalChannelOffset = gFirstDigitalChannel + 1;
+	gFirstScopeChannel = gFirstDigitalChannel + gDigitalChannelsInUse;
+
+	gChannelsInUse = gFirstScopeChannel + gScopeChannelsInUse;
+	
+	// Create hashes for digital channels
+	generateDigitalNames(gDigitalChannelsInUse, gDigitalChannelOffset, gHvDigitalInHashes);
+
 	/* HEAVY */
 	hvMidiHashes[kmmNoteOn] = hv_stringToHash("__hv_notein");
 //	hvMidiHashes[kmmNoteOff] = hv_stringToHash("noteoff"); // this is handled differently, see the render function
@@ -260,10 +386,18 @@ bool setup(BelaContext *context, void *userData)	{
 
 	gScopeChannelsInUse = gHvOutputChannels > gFirstScopeChannel ?
 			gHvOutputChannels - gFirstScopeChannel : 0;
-	gDigitalSigInChannelsInUse = gHvInputChannels > gFirstDigitalChannel ?
+	if(gDigitalEnabled)
+	{
+		gDigitalSigInChannelsInUse = gHvInputChannels > gFirstDigitalChannel ?
 			gHvInputChannels - gFirstDigitalChannel : 0;
-	gDigitalSigOutChannelsInUse = gHvOutputChannels > gFirstDigitalChannel ?
+		gDigitalSigOutChannelsInUse = gHvOutputChannels > gFirstDigitalChannel ?
 			gHvOutputChannels - gFirstDigitalChannel - gScopeChannelsInUse: 0;
+	}
+	else
+	{
+		gDigitalSigInChannelsInUse = 0;
+		gDigitalSigOutChannelsInUse = 0;
+	}
 
 	printf("Starting Heavy context with %d input channels and %d output channels\n",
 			gHvInputChannels, gHvOutputChannels);
@@ -285,9 +419,23 @@ bool setup(BelaContext *context, void *userData)	{
 	// Set heavy send hook
 	hv_setSendHook(gHeavyContext, sendHook);
 
-	midi.readFrom("hw:1,0,0");
-	midi.writeTo("hw:1,0,0");
-	midi.enableParser(true);
+	// add here other devices you need
+	gMidiPortNames.push_back("hw:1,0,0");
+	//gMidiPortNames.push_back("hw:0,0,0");
+	//gMidiPortNames.push_back("hw:1,0,1");
+	unsigned int n = 0;
+	while(n < gMidiPortNames.size())
+	{
+		Midi* newMidi = openMidiDevice(gMidiPortNames[n], true, true);
+		if(newMidi)
+		{
+			midi.push_back(newMidi);
+			++n;
+		} else {
+			gMidiPortNames.erase(gMidiPortNames.begin() + n);
+		}
+	}
+	dumpMidi();
 
 	if(gScopeChannelsInUse > 0){
 #if __clang_major__ == 3 && __clang_minor__ == 8
@@ -299,10 +447,13 @@ bool setup(BelaContext *context, void *userData)	{
 		gScopeOut = new float[gScopeChannelsInUse];
 	}
 	// Bela digital
-	dcm.setCallback(sendDigitalMessage);
-	if(context->digitalChannels > 0){
-		for(unsigned int ch = 0; ch < context->digitalChannels; ++ch){
-			dcm.setCallbackArgument(ch, hvDigitalInHashes[ch]);
+	if(gDigitalEnabled)
+	{
+		dcm.setCallback(sendDigitalMessage);
+		if(gDigitalChannelsInUse> 0){
+			for(unsigned int ch = 0; ch < gDigitalChannelsInUse; ++ch){
+				dcm.setCallbackArgument(ch, (void *) gHvDigitalInHashes[ch].c_str());
+			}
 		}
 	}
 	// unlike libpd, no need here to bind the bela_digitalOut.. receivers
@@ -322,11 +473,11 @@ bool setup(BelaContext *context, void *userData)	{
 
 void render(BelaContext *context, void *userData)
 {
-	{
-		int num;
-		while((num = midi.getParser()->numAvailableMessages()) > 0){
+	int num;
+	for(unsigned int port = 0; port < midi.size(); ++port){
+		while((num = midi[port]->getParser()->numAvailableMessages()) > 0){
 			static MidiChannelMessage message;
-			message = midi.getParser()->getNextChannelMessage();
+			message = midi[port]->getParser()->getNextChannelMessage();
 			switch(message.getType()){
 			case kmmNoteOn: {
 				//message.prettyPrint();
@@ -391,6 +542,7 @@ void render(BelaContext *context, void *userData)
 						(float)value, (float)channel+1);
 				break;
 			}
+			case kmmSystem:
 			case kmmNone:
 			case kmmAny:
 				break;
@@ -402,19 +554,27 @@ void render(BelaContext *context, void *userData)
 	if(gHvInputBuffers != NULL) {
 		for(unsigned int n = 0; n < context->audioFrames; n++) {
 			for(unsigned int ch = 0; ch < gHvInputChannels; ch++) {
-				if(ch >= context->audioInChannels+context->analogInChannels) {
+				if(ch >= gAudioChannelsInUse + gAnalogChannelsInUse) {
 					// THESE ARE PARAMETER INPUT 'CHANNELS' USED FOR ROUTING
 					// 'sensor' outputs from routing channels of dac~ are passed through here
+					// these could be also digital channels (handled by the dcm)
+					// or parameter channels used for routing (currently unhandled)
 					break;
 				} else {
 					// If more than 2 ADC inputs are used in the pd patch, route the analog inputs
 					// i.e. ADC3->analogIn0 etc. (first two are always audio inputs)
-					if(ch >= context->audioInChannels)	{
-						int m = n/2;
-						float mIn = context->analogIn[m*context->analogInChannels + (ch-context->audioInChannels)];
-						gHvInputBuffers[ch * context->audioFrames + n] = mIn;
+					if(ch >= gAudioChannelsInUse)
+					{
+						unsigned int analogCh = ch - gAudioChannelsInUse;
+						if(analogCh < context->analogInChannels)
+						{
+							int m = n/2;
+							float mIn = analogRead(context, m, analogCh);
+							gHvInputBuffers[ch * context->audioFrames + n] = mIn;
+						}
 					} else {
-						gHvInputBuffers[ch * context->audioFrames + n] = context->audioIn[n * context->audioInChannels + ch];
+						if(ch < context->audioInChannels)
+							gHvInputBuffers[ch * context->audioFrames + n] = audioRead(context, n, ch);
 					}
 				}
 			}
@@ -431,35 +591,38 @@ void render(BelaContext *context, void *userData)
 
 
 	// Bela digital in
-	// note: in multiple places below we assume that the number of digital frames is same as number of audio
-	// Bela digital in at message-rate
-	dcm.processInput(context->digital, context->digitalFrames);
-
-	// Bela digital in at signal-rate
-	if(gDigitalSigInChannelsInUse > 0)
+	if(gDigitalEnabled)
 	{
-		unsigned int j, k;
-		float *p0, *p1;
-		const unsigned int gLibpdBlockSize = context->audioFrames;
-		const unsigned int  audioFrameBase = 0;
-		float* gInBuf = gHvInputBuffers;
-		// block below copy/pasted from libpd, except
-		// 16 has been replaced with gDigitalSigInChannelsInUse
-		for (j = 0, p0 = gInBuf; j < gLibpdBlockSize; j++, p0++) {
-			unsigned int digitalFrame = audioFrameBase + j;
-			for (k = 0, p1 = p0 + gLibpdBlockSize * gFirstDigitalChannel;
-					k < gDigitalSigInChannelsInUse; ++k, p1 += gLibpdBlockSize) {
-				if(dcm.isSignalRate(k) && dcm.isInput(k)){ // only process input channels that are handled at signal rate
-					*p1 = digitalRead(context, digitalFrame, k);
+		// note: in multiple places below we assume that the number of digital frames is same as number of audio
+		// Bela digital in at message-rate
+		dcm.processInput(context->digital, context->digitalFrames);
+	
+		// Bela digital in at signal-rate
+		if(gDigitalSigInChannelsInUse > 0)
+		{
+			unsigned int j, k;
+			float *p0, *p1;
+			const unsigned int gLibpdBlockSize = context->audioFrames;
+			const unsigned int  audioFrameBase = 0;
+			float* gInBuf = gHvInputBuffers;
+			// block below copy/pasted from libpd, except
+			// 16 has been replaced with gDigitalSigInChannelsInUse
+			for (j = 0, p0 = gInBuf; j < gLibpdBlockSize; j++, p0++) {
+				unsigned int digitalFrame = audioFrameBase + j;
+				for (k = 0, p1 = p0 + gLibpdBlockSize * gFirstDigitalChannel;
+						k < gDigitalSigInChannelsInUse; ++k, p1 += gLibpdBlockSize) {
+					if(dcm.isSignalRate(k) && dcm.isInput(k)){ // only process input channels that are handled at signal rate
+						*p1 = digitalRead(context, digitalFrame, k);
+					}
 				}
 			}
 		}
 	}
 
-
 	// replacement for bang~ object
 	//hv_sendMessageToReceiverV(gHeavyContext, "bela_bang", 0.0f, "b");
-
+	
+	// heavy audio callback
 	hv_processInline(gHeavyContext, gHvInputBuffers, gHvOutputBuffers, context->audioFrames);
 	/*
 	for(int n = 0; n < context->audioFrames*gHvOutputChannels; ++n)
@@ -471,29 +634,32 @@ void render(BelaContext *context, void *userData)
 	*/
 
 	// Bela digital out
-	// Bela digital out at signal-rate
-	if(gDigitalSigOutChannelsInUse > 0)
+	if(gDigitalEnabled)
 	{
-			unsigned int j, k;
-			float *p0, *p1;
-			const unsigned int gLibpdBlockSize = context->audioFrames;
-			const unsigned int  audioFrameBase = 0;
-			float* gOutBuf = gHvOutputBuffers;
-			// block below copy/pasted from libpd, except
-			// context->digitalChannels has been replaced with gDigitalSigOutChannelsInUse
-			for (j = 0, p0 = gOutBuf; j < gLibpdBlockSize; ++j, ++p0) {
-				unsigned int digitalFrame = (audioFrameBase + j);
-				for (k = 0, p1 = p0  + gLibpdBlockSize * gFirstDigitalChannel;
-						k < gDigitalSigOutChannelsInUse; k++, p1 += gLibpdBlockSize) {
-					if(dcm.isSignalRate(k) && dcm.isOutput(k)){ // only process output channels that are handled at signal rate
-						digitalWriteOnce(context, digitalFrame, k, *p1 > 0.5);
+		// Bela digital out at signal-rate
+		if(gDigitalSigOutChannelsInUse > 0)
+		{
+				unsigned int j, k;
+				float *p0, *p1;
+				const unsigned int gLibpdBlockSize = context->audioFrames;
+				const unsigned int  audioFrameBase = 0;
+				float* gOutBuf = gHvOutputBuffers;
+				// block below copy/pasted from libpd, except
+				// context->digitalChannels has been replaced with gDigitalSigOutChannelsInUse
+				for (j = 0, p0 = gOutBuf; j < gLibpdBlockSize; ++j, ++p0) {
+					unsigned int digitalFrame = (audioFrameBase + j);
+					for (k = 0, p1 = p0  + gLibpdBlockSize * gFirstDigitalChannel;
+							k < gDigitalSigOutChannelsInUse; k++, p1 += gLibpdBlockSize) {
+						if(dcm.isSignalRate(k) && dcm.isOutput(k)){ // only process output channels that are handled at signal rate
+							digitalWriteOnce(context, digitalFrame, k, *p1 > 0.5);
+						}
 					}
 				}
-			}
+		}
+		// Bela digital out at message-rate
+		dcm.processOutput(context->digital, context->digitalFrames);
 	}
-	// Bela digital out at message-rate
-	dcm.processOutput(context->digital, context->digitalFrames);
-
+	
 	// Bela scope
 	if(gScopeChannelsInUse > 0)
 	{
@@ -514,17 +680,19 @@ void render(BelaContext *context, void *userData)
 	// Interleave the output data
 	if(gHvOutputBuffers != NULL) {
 		for(unsigned int n = 0; n < context->audioFrames; n++) {
-
 			for(unsigned int ch = 0; ch < gHvOutputChannels; ch++) {
-				if(ch >= context->audioOutChannels+context->analogOutChannels) {
+				if(ch >= gAudioChannelsInUse + gAnalogChannelsInUse) {
 					// THESE ARE SENSOR OUTPUT 'CHANNELS' USED FOR ROUTING
 					// they are the content of the 'sensor output' dac~ channels
 				} else {
-					if(ch >= context->audioOutChannels)	{
+					if(ch >= gAudioChannelsInUse)	{
 						int m = n/2;
-						context->analogOut[m * context->analogOutChannels + (ch-context->audioOutChannels)] = gHvOutputBuffers[ch*context->audioFrames + n];
+						unsigned int analogCh = ch - gAudioChannelsInUse;
+						if(analogCh < context->analogOutChannels)
+							analogWriteOnce(context, m, analogCh, gHvOutputBuffers[ch*context->audioFrames + n]);
 					} else {
-						context->audioOut[n * context->audioOutChannels + ch] = gHvOutputBuffers[ch * context->audioFrames + n];
+						if(ch < context->audioOutChannels)
+							audioWrite(context, n, ch, gHvOutputBuffers[ch * context->audioFrames + n]);
 					}
 				}
 			}

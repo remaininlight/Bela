@@ -4,15 +4,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 #include <stats.hpp>
-// setup() is called once before the audio rendering starts.
-// Use it to perform any initialisation and allocation which is dependent
-// on the period size or sample rate.
-//
-// userData holds an opaque pointer to a data structure that was passed
-// in from the call to initAudio().
-//
-// Return true on success; returning false halts the program.
-
 
 // digital inputs can be changed at will (as they are all being processed at the same time)
 // analog channels must be as per below
@@ -24,13 +15,6 @@ int gAnalogOutLoopDelay;
 int gDigitalOutLoopDelay;
 bool setup(BelaContext *context, void *userData)
 {
-	// For this test we need the same amount of audio and analog input and output channels
-	if(context->audioInChannels != context->audioOutChannels ||
-			context->analogInChannels != context-> analogOutChannels){
-		printf("Error: for this project, you need the same number of input and output channels.\n");
-		return false;
-	}
-
 	rt_printf("For this test you need the following connections:\n"
 			"analog%d out->digital%d in, analog%d out->analog%d in, "
 			"digital%d out -> digital%d in, digital%d out-> analog%d in\n",
@@ -62,11 +46,6 @@ bool setup(BelaContext *context, void *userData)
 
     return true;
 }
-
-// render() is called regularly at the highest priority by the audio engine.
-// Input and output are given from the audio hardware and the other
-// ADCs and DACs (if available). If only audio is available, numAnalogFrames
-// will be 0.
 
 const int patternLength = 31;
 static int anaErrorCount = 0;
@@ -108,16 +87,16 @@ void render(BelaContext *context, void *userData)
 			switch(context->analogInChannels){
 			case 8:
 				analog0In = analogRead(context, n/2, 0) > 0.5;
-				analogWrite(context, n/2, analogOut, writePattern[outPointer]);
+				analogWriteOnce(context, n/2, analogOut, writePattern[outPointer]);
 				break;
 			case 4:
 				analog0In = analogRead(context, n, 0) > 0.5;
-				analogWrite(context, n, analogOut, writePattern[outPointer]);
+				analogWriteOnce(context, n, analogOut, writePattern[outPointer]);
 				break;
 			case 2:
 				analog0In = analogRead(context, n * 2 + 1, 0) > 0.5;
-				analogWrite(context, 2 * n, analogOut, writePattern[outPointer]);
-				analogWrite(context, 2 * n + 1, analogOut, writePattern[outPointer]);
+				analogWriteOnce(context, 2 * n, analogOut, writePattern[outPointer]);
+				analogWriteOnce(context, 2 * n + 1, analogOut, writePattern[outPointer]);
 				break;
 			}
 			gAnalogOutLoopDelay--;

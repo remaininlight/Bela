@@ -35,14 +35,6 @@ AuxiliaryTask gTriggerSamplesTask;
 
 bool setup(BelaContext *context, void *userData)
 {
-
-	// Check that we have the same number of inputs and outputs.
-	if(context->audioInChannels != context->audioOutChannels ||
-			context->analogInChannels != context-> analogOutChannels){
-		printf("Error: for this project, you need the same number of input and output channels.\n");
-		return false;
-	}
-
 	// Retrieve a parameter passed in from the initAudio() call
 	gSampleData = *(SampleData *)userData;
 
@@ -70,7 +62,8 @@ void render(BelaContext *context, void *userData)
 			gReadPtr = -1;
 
 		for(unsigned int channel = 0; channel < context->audioOutChannels; channel++)
-			context->audioOut[n * context->audioOutChannels + channel] = out;	// ...and put it in both left and right channel
+			// ...and copy it to all the output channels
+			audioWrite(context, n, channel, out);
 	}
 }
 

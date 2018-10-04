@@ -24,6 +24,9 @@ The Bela software is distributed under the GNU Lesser General Public License
 
 #include <Bela.h>
 #include <cmath>
+#include <algorithm>
+
+int gAnalogChannelNum; // number of analog channels to iterate over
 
 int gBufferSize = 8192;
 
@@ -32,31 +35,26 @@ float *gReadBuffers[10], *gWriteBuffers[10];
 float *gBuffers0[10], *gBuffers1[10];
 
 int gWriteBufferPointers[10], gReadBufferPointers[10];
+bool gIsStdoutTty;
 
 // Task to analyse and print results which would otherwise be too slow for render()
 AuxiliaryTask gAnalysisTask;
 
 void analyseResults(void*);
 
-// setup() is called once before the audio rendering starts.
-// Use it to perform any initialisation and allocation which is dependent
-// on the period size or sample rate.
-//
-// userData holds an opaque pointer to a data structure that was passed
-// in from the call to initAudio().
-//
-// Return true on success; returning false halts the program.
-
 bool setup(BelaContext *context, void *userData)
 {	
+	gIsStdoutTty = isatty(1); // Check if stdout is a terminal
 
+	
+	// If the amout of audio and analog input and output channels is not the same
+	// we will use the minimum between input and output
+	gAnalogChannelNum = std::min(context->analogInChannels, context->analogOutChannels);
+	
 	// Check that we have the same number of inputs and outputs.
-	if(context->audioInChannels != context->audioOutChannels ||
-			context->analogInChannels != context-> analogOutChannels){
-		printf("Error: for this project, you need the same number of input and output channels.\n");
-		return false;
-	}
-
+	if(context->analogInChannels != context-> analogOutChannels)
+		printf("Different number of analog outputs and inputs available. Using %d analog channels.\n", gAnalogChannelNum);
+	
 	// Clear the filter data structures
 	for(int i = 0; i < 10; i++) {
 		gReadBufferPointers[i] = gWriteBufferPointers[i] = 0;
@@ -75,21 +73,16 @@ bool setup(BelaContext *context, void *userData)
 	return true;
 }
 
-// render() is called regularly at the highest priority by the audio engine.
-// Input and output are given from the audio hardware and the other
-// ADCs and DACs (if available). If only audio is available, numMatrixFrames
-// will be 0.
-
 void render(BelaContext *context, void *userData)
 {
 	bool bufferIsFull = false;	// Whether at least one buffer has filled
 	
 	for(unsigned int n = 0; n < context->audioFrames; n++) {
 		// Store audio inputs in buffer
-		for(unsigned int ch = 0; ch < context->audioOutChannels; ch++) {
+		for(unsigned int ch = 0; ch < context->audioInChannels; ch++) {
 			if(gWriteBufferPointers[ch] < gBufferSize) {
 				gWriteBuffers[ch][gWriteBufferPointers[ch]] = 
-					context->audioIn[n * context->audioOutChannels + ch];
+					context->audioIn[n * context->audioInChannels + ch];
 				gWriteBufferPointers[ch]++;
 				if(gWriteBufferPointers[ch] >= gBufferSize)
 					bufferIsFull = true;
@@ -100,10 +93,10 @@ void render(BelaContext *context, void *userData)
 	if(context->analogOutChannels != 0) {
 		for(unsigned int n = 0; n < context->analogFrames; n++) {
 			// Store analog inputs in buffer, starting at channel 2
-			for(unsigned int ch = 0; ch < context->analogOutChannels; ch++) {
+			for(unsigned int ch = 0; ch < gAnalogChannelNum; ch++) {
 				if(gWriteBufferPointers[ch + 2] < gBufferSize) {
 					gWriteBuffers[ch + 2][gWriteBufferPointers[ch + 2]] = 
-						context->analogIn[n * context->analogOutChannels + ch];
+						context->analogIn[n * context->analogInChannels + ch];
 					gWriteBufferPointers[ch + 2]++;
 					if(gWriteBufferPointers[ch + 2] >= gBufferSize)
 						bufferIsFull = true;
@@ -139,7 +132,8 @@ void render(BelaContext *context, void *userData)
 
 void analyseResults(void*)
 {
-	rt_printf("\e[1;1H\e[2J");	// Command to clear the screen
+	if(gIsStdoutTty)
+		rt_printf("\e[1;1H\e[2J");	// Command to clear the screen
 
 	// Print the analysis results. channels 0-1 are audio, channels 2-9 are analog
 	for(int ch = 0; ch < 10; ch++) {
@@ -173,9 +167,6 @@ void analyseResults(void*)
 					gReadBufferPointers[ch]);
 	}
 }
-
-// cleanup() is called once at the end, after the audio has stopped.
-// Release any resources that were allocated in setup().
 
 void cleanup(BelaContext *context, void *userData)
 {

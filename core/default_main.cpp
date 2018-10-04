@@ -32,7 +32,7 @@ void usage(const char * processName)
 
 int main(int argc, char *argv[])
 {
-	BelaInitSettings settings;	// Standard audio settings
+	BelaInitSettings* settings = Bela_InitSettings_alloc();	// Standard audio settings
 
 	struct option customOptions[] =
 	{
@@ -41,36 +41,41 @@ int main(int argc, char *argv[])
 	};
 
 	// Set default settings
-	Bela_defaultSettings(&settings);
-	settings.setup = setup;
-	settings.render = render;
-	settings.cleanup = cleanup;
+	Bela_defaultSettings(settings);
+	settings->setup = setup;
+	settings->render = render;
+	settings->cleanup = cleanup;
 
 	// Parse command-line arguments
+	int ret = -1;
 	while (1) {
 		int c;
-		if ((c = Bela_getopt_long(argc, argv, "h", customOptions, &settings)) < 0)
+		if ((c = Bela_getopt_long(argc, argv, "h", customOptions, settings)) < 0)
 				break;
 		switch (c) {
 		case 'h':
-				usage(basename(argv[0]));
-				exit(0);
+			usage(basename(argv[0]));
+			ret = 0;
 		case '?':
 		default:
-				usage(basename(argv[0]));
-				exit(1);
+			usage(basename(argv[0]));
+			ret = 1;
 		}
+		Bela_InitSettings_free(settings);
+		return ret;
 	}
 
 	// Initialise the PRU audio device
-	if(Bela_initAudio(&settings, 0) != 0) {
-		cout << "Error: unable to initialise audio" << endl;
+	if(Bela_initAudio(settings, 0) != 0) {
+		Bela_InitSettings_free(settings);
+		fprintf(stderr,"Error: unable to initialise audio\n");
 		return -1;
 	}
+	Bela_InitSettings_free(settings);
 
 	// Start the audio device running
 	if(Bela_startAudio()) {
-		cout << "Error: unable to start real-time audio" << endl;
+		fprintf(stderr,"Error: unable to start real-time audio\n"); 
 		// Stop the audio device
 		Bela_stopAudio();
 		// Clean up any resources allocated for audio

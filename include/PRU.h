@@ -9,8 +9,9 @@
 #define PRU_H_
 
 #include <stdint.h>
-#include "../include/Bela.h"
-#include "../include/Gpio.h"
+#include "Bela.h"
+#include "Gpio.h"
+#include "AudioCodec.h"
 
 /**
  * Internal version of the BelaContext struct which does not have const
@@ -144,13 +145,10 @@ class PRU
 private:
 	static const unsigned int kPruGPIODACSyncPin;
 	static const unsigned int kPruGPIOADCSyncPin;
-	static const unsigned int kPruGPIOTestPin;
-	static const unsigned int kPruGPIOTestPin2;
-	static const unsigned int kPruGPIOTestPin3;
 
 public:
 	// Constructor
-	PRU(InternalBelaContext *input_context);
+	PRU(InternalBelaContext *input_context, AudioCodec *audio_codec);
 
 	// Destructor
 	~PRU();
@@ -162,9 +160,9 @@ public:
 	void cleanupGPIO();
 
 	// Initialise and open the PRU
-	int initialise(int pru_num, bool uniformSampleRate,
-				   int mux_channels = 0,
-				   bool capeButtonMonitoring = true);
+	int initialise(BelaHw newBelaHw, int pru_num, bool uniformSampleRate,
+				   int mux_channels,
+				   bool capeButtonMonitoring, bool enableLed);
 
 	// Run the code image in pru_rtaudio_bin.h
 	int start(char * const filename);
@@ -183,6 +181,7 @@ public:
 
 private:
 	void initialisePruCommon();
+	int testPruError();
 	InternalBelaContext *context;	// Overall settings
 
 	int pru_number;		// Which PRU we use
@@ -195,18 +194,22 @@ private:
 	int hardware_analog_frames; // The actual number of frames for the analog channels, as far as the PRU is concerned
 	bool gpio_enabled;	// Whether GPIO has been prepared
 	bool led_enabled;	// Whether a user LED is enabled
-	bool gpio_test_pin_enabled; // Whether the test pin was also enabled
 
 	PruMemory* pruMemory;
 	volatile uint32_t *pru_buffer_comm;
+	uint32_t pruBufferMcaspFrames;
 
 	float *last_analog_out_frame;
 	uint32_t *last_digital_buffer;
 	float *audio_expander_input_history;
 	float *audio_expander_output_history;
 	float audio_expander_filter_coeff;
+	bool pruUsesMcaspIrq;
+	BelaHw belaHw;
 
 	Gpio belaCapeButton; // Monitoring the bela cape button
+	Gpio underrunLed; // Flashing an LED upon underrun
+	AudioCodec *codec; // Required to hard reset audio codec from loop
 };
 
 

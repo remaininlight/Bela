@@ -42,13 +42,6 @@ bool setup(BelaContext *context, void *userData)
 		return false;
 	}
 
-	// Check that we have the same number of inputs and outputs.
-	if(context->audioInChannels != context->audioOutChannels ||
-			context->analogInChannels != context-> analogOutChannels){
-		printf("Error: for this project, you need the same number of input and output channels.\n");
-		return false;
-	}
-
 	gInverseSampleRate = 1.0 / context->analogSampleRate;
 	gPhase = 0.0;
 
@@ -58,21 +51,21 @@ bool setup(BelaContext *context, void *userData)
 void render(BelaContext *context, void *userData)
 {
 	for(unsigned int n = 0; n < context->analogFrames; n++) {
-		// Set LED to different phase for each matrix channel
+		// Set LED to different phase for each analog output channel
 		float relativePhase = 0.0;
 		for(unsigned int channel = 0; channel < context->analogOutChannels; channel++) {
 			float out = kMinimumAmplitude + kAmplitudeRange * 0.5f * (1.0f + sinf(gPhase + relativePhase));
 
-			analogWrite(context, n, channel, out);
+			analogWriteOnce(context, n, channel, out);
 
 			// Advance by pi/4 (1/8 of a full rotation) for each channel
-			relativePhase += M_PI * 0.25;
+			relativePhase += (float)M_PI * 0.25f;
 		}
 
-        // Update and wrap phase of sine tone
-		gPhase += 2.0 * M_PI * gFrequency * gInverseSampleRate;
-		if(gPhase > 2.0 * M_PI)
-			gPhase -= 2.0 * M_PI;
+		// Update and wrap phase of sine tone
+		gPhase += 2.0f * (float)M_PI * gFrequency * gInverseSampleRate;
+		if(gPhase > M_PI)
+			gPhase -= 2.0f * (float)M_PI;
 	}
 }
 
@@ -95,15 +88,15 @@ structure but this time for the analog output channels rather than the audio.
 - connect an LED in series with a 470ohm resistor between each of the analogOut pins and ground.
 
 Within the first for loop in render we cycle through each frame in the analog 
-output matrix. At each frame we then cycle through the analog output channels 
+output channels. At each frame we then cycle through the analog output channels 
 with another for loop and set the output voltage according to the phase of a 
 sine tone that acts as an LFO. The analog output pins can provide a voltage of 
 ~4.092V.
 
-The output on each pin is set with `analogWrite()` within the for loop that 
+The output on each pin is set with `analogWriteOnce()` within the for loop that 
 cycles through the analog output channels. This needs to be provided with 
-arguments as follows `analogWrite(context, n, channel, out)`. Channel is 
-where the you give the address of the analog output pin (in this case we cycle 
+arguments as follows `analogWriteOnce(context, n, channel, out)`. Channel is 
+where you give the address of the analog output pin (in this case we cycle
 through each pin address in the for loop), out is the variable that holds the 
 desired output (in this case set by the sine wave) and `n` is the frame number 
 (given by the other for loop).

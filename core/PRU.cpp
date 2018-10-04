@@ -14,19 +14,18 @@
  */
 
 #include "../include/PRU.h"
-#include "../include/prussdrv.h"
-#include "../include/pruss_intc_mapping.h"
+#include "../include/PruBinary.h"
+#include <prussdrv.h>
 #include "../include/digital_gpio_mapping.h"
 #include "../include/GPIOcontrol.h"
 #include "../include/Bela.h"
-#include "../include/pru_rtaudio_bin.h"
 #include "../include/Gpio.h"
 #include "../include/Utilities.h"
+#include "../include/PruArmCommon.h"
 
 #include <iostream>
 #include <stdlib.h>
 #include <cstdio>
-#include <cerrno>
 #include <cmath>
 #include <fcntl.h>
 #include <sys/mman.h>
@@ -36,21 +35,29 @@
 #include <sys/mman.h>
 #include <string.h>
 
-//#define CTAG_FACE_8CH
-//#define CTAG_BEAST_16CH
-
-#if (defined(CTAGE_FACE_8CH) || defined(CTAG_FACE_16CH))
-	#define PRU_USES_MCASP_IRQ
-	#error TODO: load different PRU code
-#endif
-
 #if !(defined(BELA_USE_POLL) || defined(BELA_USE_RTDM))
 #error Define one of BELA_USE_POLL, BELA_USE_RTDM
 #endif
 
 #ifdef BELA_USE_RTDM
+#if __has_include(<linux/rtdm_pruss_irq.h>)
+#include <linux/rtdm_pruss_irq.h>
+#else /* has_include */
+#define RTDM_PRUSS_IRQ_VERSION 0
+#endif /* has_include */
+#endif /* BELA_USE_RTDM */
+
+#ifdef BELA_USE_RTDM
 static char rtdm_driver[] = "/dev/rtdm/rtdm_pruss_irq_0";
-static int rtdm_fd;
+static int rtdm_fd_pru_to_arm = 0;
+#if RTDM_PRUSS_IRQ_VERSION >= 1
+static const unsigned int pru_system_event_rtdm = PRU_SYSTEM_EVENT_RTDM;
+#define PRU_SYS_EV_MCASP_RX_INTR    54 // mcasp_r_intr_pend
+#define PRU_SYS_EV_MCASP_TX_INTR    55 // mcasp_x_intr_pend
+static const uint8_t pru_system_events_mcasp[] = {PRU_SYS_EV_MCASP_RX_INTR, PRU_SYS_EV_MCASP_TX_INTR};
+enum {mcasp_to_pru_channel = 1};
+static int rtdm_fd_mcasp_to_pru = 0;
+#endif /* RTDM_PRUSS_IRQ_VERSION >= 1 */
 #endif
 
 // Xenomai-specific includes
@@ -137,6 +144,7 @@ public:
 			printf("digital: %p %p\n", pruDigitalStart[0], pruDigitalStart[1]);
 			printf("audio: %p %p %p %p\n", pruAudioOutStart[0], pruAudioOutStart[1], pruAudioInStart[0], pruAudioInStart[1]);
 			printf("analog: %p %p %p %p\n", pruAnalogOutStart[0], pruAnalogOutStart[1], pruAnalogInStart[0], pruAnalogInStart[1]);
+			printf("analog offset: %#x %#x %#x %#x\n", pruAnalogOutStart[0] - pruSharedRam, pruAnalogOutStart[1] - pruSharedRam, pruAnalogInStart[0] - pruSharedRam, pruAnalogInStart[1] - pruSharedRam);
 		}
 	}
 	void copyFromPru(int buffer)
@@ -194,50 +202,33 @@ private:
 #define PRU_MUX_CONFIG         13
 #define PRU_MUX_END_CHANNEL    14
 #define PRU_BUFFER_SPI_FRAMES  15
+#define PRU_BOARD_FLAGS        16
+#define PRU_ERROR_OCCURRED     17
 
-short int digitalPins[NUM_DIGITALS] = {
-		GPIO_NO_BIT_0,
-		GPIO_NO_BIT_1,
-		GPIO_NO_BIT_2,
-		GPIO_NO_BIT_3,
-		GPIO_NO_BIT_4,
-		GPIO_NO_BIT_5,
-		GPIO_NO_BIT_6,
-		GPIO_NO_BIT_7,
-		GPIO_NO_BIT_8,
-		GPIO_NO_BIT_9,
-		GPIO_NO_BIT_10,
-		GPIO_NO_BIT_11,
-		GPIO_NO_BIT_12,
-		GPIO_NO_BIT_13,
-		GPIO_NO_BIT_14,
-		GPIO_NO_BIT_15,
-};
+// error codes sent from the PRU
+#define ARM_ERROR_TIMEOUT 1
+#define ARM_ERROR_XUNDRUN 2
+#define ARM_ERROR_XSYNCERR 3
+#define ARM_ERROR_XCKFAIL 4
+#define ARM_ERROR_XDMAERR 5
 
-#define PRU_SAMPLE_INTERVAL_NS 11338	// 88200Hz per SPI sample = 11.338us
+static unsigned int* gDigitalPins = NULL;
 
-#define GPIO0_ADDRESS 		0x44E07000
-#define GPIO1_ADDRESS 		0x4804C000
-#define GPIO_SIZE			0x198
-#define GPIO_CLEARDATAOUT 	(0x190 / 4)
-#define GPIO_SETDATAOUT 	(0x194 / 4)
-
-#define TEST_PIN_GPIO_BASE	GPIO0_ADDRESS	// Use GPIO0(31) for debugging
-#define TEST_PIN_MASK		(1 << 31)
-#define TEST_PIN2_MASK		(1 << 26)
-
-#define USERLED3_GPIO_BASE  GPIO1_ADDRESS // GPIO1(24) is user LED 3
+#define USERLED3_GPIO_BASE  GPIO_ADDRESSES[1] // GPIO1(24) is user LED 3
 #define USERLED3_PIN_MASK   (1 << 24)
+const unsigned int belaMiniLedBlue = 87;
+const unsigned int belaMiniLedBlueGpioBase = GPIO_ADDRESSES[2]; // GPIO2(23) is BelaMini LED blue
+const unsigned int belaMiniLedBlueGpioPinMask = 1 << 23;
+const unsigned int belaMiniLedRed = 89;
+const unsigned int underrunLedDuration = 20000;
+const unsigned int saltSwitch1Gpio = 60; // P9_12
 
-#define BELA_CAPE_BUTTON_PIN 115
+const unsigned int BELA_CAPE_BUTTON_PIN = 115;
 
 const unsigned int PRU::kPruGPIODACSyncPin = 5;	// GPIO0(5); P9-17
 const unsigned int PRU::kPruGPIOADCSyncPin = 48; // GPIO1(16); P9-15
 
-const unsigned int PRU::kPruGPIOTestPin = 60;	// GPIO1(28); P9-12
-const unsigned int PRU::kPruGPIOTestPin2 = 31;	// GPIO0(31); P9-13
-const unsigned int PRU::kPruGPIOTestPin3 = 26;	// GPIO0(26); P8-14
-
+#ifdef USE_NEON_FORMAT_CONVERSION
 // These four functions are written in assembly in FormatConvert.S
 extern "C" {
 	void int16_to_float_audio(int numSamples, int16_t *inBuffer, float *outBuffer);
@@ -245,18 +236,20 @@ extern "C" {
 	void float_to_int16_audio(int numSamples, float *inBuffer, int16_t *outBuffer);
 	void float_to_int16_analog(int numSamples, float *inBuffer, uint16_t *outBuffer);
 }
+#endif /* USE_NEON_FORMAT_CONVERSION */
+
 // Constructor: specify a PRU number (0 or 1)
-PRU::PRU(InternalBelaContext *input_context)
+PRU::PRU(InternalBelaContext *input_context, AudioCodec *audio_codec)
 : context(input_context),
   pru_number(1),
   initialised(false),
   running(false),
   analog_enabled(false),
   digital_enabled(false), gpio_enabled(false), led_enabled(false),
-  gpio_test_pin_enabled(false),
   pru_buffer_comm(0),
   audio_expander_input_history(0), audio_expander_output_history(0),
-  audio_expander_filter_coeff(0)
+  audio_expander_filter_coeff(0), pruUsesMcaspIrq(false), belaHw(BelaHw_NoHw),
+  codec(audio_codec)
 {
 }
 
@@ -285,32 +278,32 @@ int PRU::prepareGPIO(int include_led)
 		// Prepare DAC CS/ pin: output, high to begin
 		if(gpio_export(kPruGPIODACSyncPin)) {
 			if(gRTAudioVerbose)
-				cout << "Warning: couldn't export DAC sync pin\n";
+				fprintf(stderr, "Warning: couldn't export DAC sync pin\n");
 		}
 		if(gpio_set_dir(kPruGPIODACSyncPin, OUTPUT_PIN)) {
 			if(gRTAudioVerbose)
-				cout << "Couldn't set direction on DAC sync pin\n";
+				fprintf(stderr, "Couldn't set direction on DAC sync pin\n");
 			return -1;
 		}
 		if(gpio_set_value(kPruGPIODACSyncPin, HIGH)) {
 			if(gRTAudioVerbose)
-				cout << "Couldn't set value on DAC sync pin\n";
+				fprintf(stderr, "Couldn't set value on DAC sync pin\n");
 			return -1;
 		}
 
 		// Prepare ADC CS/ pin: output, high to begin
 		if(gpio_export(kPruGPIOADCSyncPin)) {
 			if(gRTAudioVerbose)
-				cout << "Warning: couldn't export ADC sync pin\n";
+				fprintf(stderr, "Warning: couldn't export ADC sync pin\n");
 		}
 		if(gpio_set_dir(kPruGPIOADCSyncPin, OUTPUT_PIN)) {
 			if(gRTAudioVerbose)
-				cout << "Couldn't set direction on ADC sync pin\n";
+				fprintf(stderr, "Couldn't set direction on ADC sync pin\n");
 			return -1;
 		}
 		if(gpio_set_value(kPruGPIOADCSyncPin, HIGH)) {
 			if(gRTAudioVerbose)
-				cout << "Couldn't set value on ADC sync pin\n";
+				fprintf(stderr, "Couldn't set value on ADC sync pin\n");
 			return -1;
 		}
 
@@ -318,14 +311,24 @@ int PRU::prepareGPIO(int include_led)
 	}
 
 	if(context->digitalFrames != 0){
+		if(belaHw == BelaHw_BelaMini)
+		{
+			gDigitalPins = digitalPinsPocketBeagle;
+		} else {
+			gDigitalPins = digitalPinsBeagleBone;
+		}
 		for(unsigned int i = 0; i < context->digitalChannels; i++){
-			if(gpio_export(digitalPins[i])) {
-				if(gRTAudioVerbose)
-					cerr << "Warning: couldn't export digital GPIO pin " << digitalPins[i] << "\n"; // this is left as a warning because if the pin has been exported by somebody else, can still be used
+			if(belaHw == BelaHw_Salt) {
+				if(gDigitalPins[i] == saltSwitch1Gpio)
+					continue; // leave alone this pin as it is used by bela_button.service
 			}
-			if(gpio_set_dir(digitalPins[i], INPUT_PIN)) {
+			if(gpio_export(gDigitalPins[i])) {
 				if(gRTAudioVerbose)
-					cerr << "Error: Couldn't set direction on digital GPIO pin " << digitalPins[i] << "\n";
+					fprintf(stderr,"Warning: couldn't export digital GPIO pin %d\n" , gDigitalPins[i]); // this is left as a warning because if the pin has been exported by somebody else, can still be used
+			}
+			if(gpio_set_dir(gDigitalPins[i], INPUT_PIN)) {
+				if(gRTAudioVerbose)
+					fprintf(stderr,"Error: Couldn't set direction on digital GPIO pin %d\n" , gDigitalPins[i]);
 				return -1;
 			}
 		}
@@ -333,9 +336,18 @@ int PRU::prepareGPIO(int include_led)
 	}
 
 	if(include_led) {
-		// Turn off system function for LED3 so it can be reused by PRU
-		led_set_trigger(3, "none");
-		led_enabled = true;
+		if(belaHw == BelaHw_BelaMini)
+		{
+			//using on-board LED
+			gpio_export(belaMiniLedBlue);
+			gpio_set_dir(belaMiniLedBlue, OUTPUT_PIN);
+			led_enabled = true;
+		} else {
+			// Using BeagleBone's USR3 LED
+			// Turn off system function for LED3 so it can be reused by PRU
+			led_set_trigger(3, "none");
+			led_enabled = true;
+		}
 	}
 
 	gpio_enabled = true;
@@ -354,30 +366,38 @@ void PRU::cleanupGPIO()
 	}
 	if(digital_enabled){
 		for(unsigned int i = 0; i < context->digitalChannels; i++){
-			gpio_unexport(digitalPins[i]);
+			if(belaHw == BelaHw_Salt) {
+				if(gDigitalPins[i] == saltSwitch1Gpio)
+					continue; // leave alone this pin as it is used by bela_button.service
+			}
+			gpio_unexport(gDigitalPins[i]);
 		}
 	}
-	if(gpio_test_pin_enabled) {
-		gpio_unexport(kPruGPIOTestPin);
-		gpio_unexport(kPruGPIOTestPin2);
-		gpio_unexport(kPruGPIOTestPin3);
-	}
 	if(led_enabled) {
-		// Set LED back to default eMMC status
-		// TODO: make it go back to its actual value before this program,
-		// rather than the system default
-		led_set_trigger(3, "mmc1");
+		if(belaHw == BelaHw_BelaMini)
+		{
+			//using on-board LED
+			gpio_unexport(belaMiniLedBlue);
+		} else {
+			// Set LED back to default eMMC status
+			// TODO: make it go back to its actual value before this program,
+			// rather than the system default
+			led_set_trigger(3, "mmc1");
+		}
 	}
-	gpio_enabled = gpio_test_pin_enabled = false;
+	gpio_enabled = false;
 }
 
 // Initialise and open the PRU
-int PRU::initialise(int pru_num, bool uniformSampleRate, int mux_channels, bool capeButtonMonitoring)
+int PRU::initialise(BelaHw newBelaHw, int pru_num, bool uniformSampleRate, int mux_channels, bool capeButtonMonitoring, bool enableLed)
 {
-	if(context->analogInChannels != context->analogOutChannels){
-		fprintf(stderr, "Error: TODO: a different number of channels for inputs and outputs is not yet supported\n");
+	belaHw = newBelaHw;
+	// Initialise the GPIO pins, including possibly the digital pins in the render routines
+	if(prepareGPIO(enableLed)) {
+		fprintf(stderr, "Error: unable to prepare GPIO for PRU audio\n");
 		return 1;
 	}
+
 	hardware_analog_frames = context->analogFrames;
 
 	if(!gpio_enabled) {
@@ -395,17 +415,12 @@ int PRU::initialise(int pru_num, bool uniformSampleRate, int mux_channels, bool 
 	}
 	pruMemory = new PruMemory(pru_number, context);
 
-#ifdef CTAG_FACE_8CH
-//TODO :  check that this ifdef block is not needed
-	//pru_buffer_audio_adc = &pru_buffer_audio_dac[16 * context->audioFrames];
-#elif defined(CTAG_BEAST_16CH)
-	//pru_buffer_audio_adc = &pru_buffer_audio_dac[32 * context->audioFrames];
-#else
-	//pru_buffer_audio_adc = &pru_buffer_audio_dac[4 * context->audioFrames];
-#endif
-
 	if(capeButtonMonitoring){
 		belaCapeButton.open(BELA_CAPE_BUTTON_PIN, INPUT, false);
+	}
+	if(belaHw == BelaHw_BelaMini && enableLed){
+		underrunLed.open(belaMiniLedRed, OUTPUT);
+		underrunLed.clear();
 	}
 
 	// after setting all PRU settings, we adjust
@@ -414,7 +429,7 @@ int PRU::initialise(int pru_num, bool uniformSampleRate, int mux_channels, bool 
 	uniform_sample_rate = uniformSampleRate;
 	if(uniform_sample_rate)
 	{
-		if(context->analogInChannels != context->analogOutChannels)
+		if(context->analogOutChannels && (context->analogInChannels != context->analogOutChannels))
 		{
 			fprintf(stderr, "Different numbers of inputs and outputs is not supported yet\n");
 			return 1;
@@ -438,6 +453,11 @@ int PRU::initialise(int pru_num, bool uniformSampleRate, int mux_channels, bool 
 
 	// Allocate audio buffers
 #ifdef USE_NEON_FORMAT_CONVERSION
+	if(belaHw == BelaHw_Salt)
+	{
+		fprintf(stderr, "USE_NEON_FORMAT_CONVERSION is incompatible with Salt\n");
+		return 1;
+	}
 	if(uniform_sample_rate && context->analogFrames != hardaware_analog_frames)
 	{
 		fprintf(stderr, "Error: using uniform_sample_rate is not allowed with USE_NEON_FORMAT_CONVERSION\n");
@@ -561,55 +581,28 @@ int PRU::initialise(int pru_num, bool uniformSampleRate, int mux_channels, bool 
 	return 0;
 }
 
-#ifdef PRU_USES_MCASP_IRQ
-static int devMemWrite(off_t target, uint32_t* value)
-{
-	const unsigned long MAP_SIZE = 4096UL;
-	const unsigned long MAP_MASK = (MAP_SIZE - 1);
-	int fd;
-	void *map_base, *virt_addr;
-	uint32_t writeval = *value;
-
-	if((fd = open("/dev/mem", O_RDWR | O_SYNC)) == -1) // NOWRAP
-	{
-		fprintf(stderr, "Unable to open /dev/mem: %d %s\n", fd, strerror(-fd));
-		return -1;
-	}
-	map_base = mmap(0, MAP_SIZE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, target & ~MAP_MASK); // NOWRAP
-	if(map_base == (void *) -1)
-	{
-		fprintf(stderr, "Unable to mmap %ld\n", target);
-		return -1;
-	}
-
-	virt_addr = ((char*)map_base) + (target & MAP_MASK);
-	// writes 4-byte word (unsigned long)
-	*((unsigned long *) virt_addr) = writeval;
-	uint32_t read_result = *((unsigned long *) virt_addr);
-	*value = read_result;
-	if(munmap(map_base, MAP_SIZE) == -1)
-	{
-		fprintf(stderr, "Error while unmapping memory\n");
-	}
-	close(fd);
-	return 0;
-}
-
-static int maskMcAspInterrupt()
-{
-	off_t address = 0x482000cc;
-	uint32_t value = 0x30000;
-	int ret = devMemWrite(address, &value);
-	if(ret < 0)
-	{
-		return -1;
-	} else
-		return 0;
-}
-#endif /* PRU_USES_MCASP_IRQ */
-
 void PRU::initialisePruCommon()
 {
+	uint32_t board_flags = 0;
+	switch(belaHw) {
+	case BelaHw_BelaMini:
+		board_flags |= 1 << BOARD_FLAGS_BELA_MINI;
+		break;
+	case BelaHw_CtagFace:
+	case BelaHw_CtagFaceBela:
+		board_flags |= 1 << BOARD_FLAGS_CTAG_FACE;
+		break;
+	case BelaHw_CtagBeast:
+	case BelaHw_CtagBeastBela:
+		board_flags |= 1 << BOARD_FLAGS_CTAG_BEAST;
+		break;
+	case BelaHw_Bela:
+	case BelaHw_Salt:
+	case BelaHw_NoHw:
+	default:
+		break;
+	}
+	pru_buffer_comm[PRU_BOARD_FLAGS] = board_flags;
     /* Set up flags */
 	pru_buffer_comm[PRU_SHOULD_STOP] = 0;
 	pru_buffer_comm[PRU_CURRENT_BUFFER] = 0;
@@ -619,17 +612,14 @@ void PRU::initialisePruCommon()
 	else
 		pruFrames = context->audioFrames / 2; // PRU assumes 8 "fake" channels when SPI is disabled
 	pru_buffer_comm[PRU_BUFFER_SPI_FRAMES] = pruFrames;
-#ifdef CTAG_FACE_8CH
-//TODO :  factor out the number of channels
-	pruFrames *= 4;
-#elif defined(CTAG_BEAST_16CH)
-	pruFrames *= 8;
-#endif
-	pru_buffer_comm[PRU_BUFFER_MCASP_FRAMES] = pruFrames;
+	pruBufferMcaspFrames = pruFrames * context->audioOutChannels / 2;
+     // TODO: it seems that PRU_BUFFER_MCASP_FRAMES is not very meaningful(cf pru_rtaudio_irq.p)
+	pru_buffer_comm[PRU_BUFFER_MCASP_FRAMES] = pruBufferMcaspFrames;
 	pru_buffer_comm[PRU_SHOULD_SYNC] = 0;
 	pru_buffer_comm[PRU_SYNC_ADDRESS] = 0;
 	pru_buffer_comm[PRU_SYNC_PIN_MASK] = 0;
 	pru_buffer_comm[PRU_PRU_NUMBER] = pru_number;
+	pru_buffer_comm[PRU_ERROR_OCCURRED] = 0;
 
 
 	/* Set up multiplexer info */
@@ -649,8 +639,14 @@ void PRU::initialisePruCommon()
 	}
 	
 	if(led_enabled) {
-		pru_buffer_comm[PRU_LED_ADDRESS] = USERLED3_GPIO_BASE;
-		pru_buffer_comm[PRU_LED_PIN_MASK] = USERLED3_PIN_MASK;
+		if(belaHw == BelaHw_BelaMini)
+		{
+			pru_buffer_comm[PRU_LED_ADDRESS] = belaMiniLedBlueGpioBase;
+			pru_buffer_comm[PRU_LED_PIN_MASK] = belaMiniLedBlueGpioPinMask;
+		} else {
+			pru_buffer_comm[PRU_LED_ADDRESS] = USERLED3_GPIO_BASE;
+			pru_buffer_comm[PRU_LED_PIN_MASK] = USERLED3_PIN_MASK;
+		}
 	}
 	else {
 		pru_buffer_comm[PRU_LED_ADDRESS] = 0;
@@ -677,45 +673,118 @@ void PRU::initialisePruCommon()
 // Run the code image in the specified file
 int PRU::start(char * const filename)
 {
-#ifdef PRU_USES_MCASP_IRQ
-	/* The PRU will enable the McASP interrupts. Here we mask
-	 * them out from ARM so that they do not hang the CPU. */
-	if(maskMcAspInterrupt() < 0)
+	switch(belaHw)
 	{
-		fprintf(stderr, "Error: failed to disable the McASP interrupt\n");
-		return 1;
+		case BelaHw_Bela:
+			//nobreak
+		case BelaHw_BelaMini:
+			//nobreak
+		case BelaHw_Salt:
+			pruUsesMcaspIrq = false;
+			break;
+		case BelaHw_CtagFace:
+			//nobreak
+		case BelaHw_CtagBeast:
+			//nobreak
+		case BelaHw_CtagFaceBela:
+			//nobreak
+		case BelaHw_CtagBeastBela:
+			pruUsesMcaspIrq = true;
+			break;
+		case BelaHw_NoHw:
+		default:
+			fprintf(stderr, "Error: unrecognized hardware\n");
+			return 1;
 	}
-	#warning TODO: unmask interrupt when program stops
-#endif
 
+#if RTDM_PRUSS_IRQ_VERSION < 1
+        if(pruUsesMcaspIrq)
+        {
+                fprintf(stderr, "Error: the installed rtdm_pruss_irq driver cannot be used in conjunction with McASP interrupts. Update the driver\n");
+                return -1;
+        }
+
+#endif /* RTDM_PRUSS_IRQ_VERSION */
 #ifdef BELA_USE_RTDM
-	// Open RTDM driver
-	// NOTE: if this is moved later on, (e.g.: at the beginning of loop())
-	// it will often hang the system (especially for small blocksizes).
-	// Not sure why this would happen, perhaps a race condition between the PRU
-	// and the rtdm_driver?
-	if ((rtdm_fd = __wrap_open(rtdm_driver, O_RDWR)) < 0) {
-		fprintf(stderr, "Failed to open the kernel driver: (%d) %s.\n", errno, strerror(errno));
-		if(errno == EBUSY) // Device or resource busy
-		{
-			fprintf(stderr, "Another program is already running?\n");
-		}
-		if(errno == ENOENT) // No such file or directory
-		{
-			fprintf(stderr, "Maybe try\n  modprobe rtdm_pruss_irq\n?\n");
-		}
-		return 1;
+        // Open RTDM driver
+        // NOTE: if this is moved later on, (e.g.: at the beginning of loop())
+        // it will often hang the system (especially for small blocksizes).
+        // Not sure why this would happen, perhaps a race condition between the PRU
+        // and the rtdm_driver?
+        if ((rtdm_fd_pru_to_arm = __wrap_open(rtdm_driver, O_RDWR)) < 0) {
+                fprintf(stderr, "Failed to open the kernel driver: (%d) %s.\n", errno, strerror(errno));
+                if(errno == EBUSY) // Device or resource busy
+                {
+                        fprintf(stderr, "Another program is already running?\n");
+                }
+                if(errno == ENOENT) // No such file or directory
+                {
+                        fprintf(stderr, "Maybe try\n  modprobe rtdm_pruss_irq\n?\n");
+                }
+                return 1;
+        }
+#if RTDM_PRUSS_IRQ_VERSION >= 1
+        // From version 1 onwards, we need to specify the PRU system event we want to receive interrupts from (see rtdm_pruss_irq.h)
+        // For rtdm_fd_pru_to_arm we use the default mapping
+        int ret = __wrap_ioctl(rtdm_fd_pru_to_arm, RTDM_PRUSS_IRQ_REGISTER, pru_system_event_rtdm);
+        if(ret == -1)
+        {
+                fprintf(stderr, "ioctl failed: %d %s\n", errno, strerror(errno));
+                return 1;
+        }
+        if(pruUsesMcaspIrq)
+	{
+                if ((rtdm_fd_mcasp_to_pru = __wrap_open(rtdm_driver, O_RDWR)) < 0) {
+                        fprintf(stderr, "Unable to open rtdm driver to register McASP interrupts: (%d) %s.\n", errno, strerror(errno));
+                        return 1;
+                }
+                // For rtdm_fd_mcasp_to_pru we use an arbitrary mapping to set up
+                // the McASP to PRU interrupt.
+                // We use PRU-INTC channel 0, which will trigger the PRUs R31.t30
+                // This will not propagate to ARM (in
+                // fact we have to mask it from ARM elsewhere), so no Linux/rtdm
+                // IRQ is set up by the driver and we will not be able/need to
+                // call `read()` on  `rtdm_fd_mcasp_to_pru`.
+                struct rtdm_pruss_irq_registration rtdm_struct;
+                rtdm_struct.pru_system_events = pru_system_events_mcasp;
+                rtdm_struct.pru_system_events_count = sizeof(pru_system_events_mcasp);
+                rtdm_struct.pru_intc_channel = mcasp_to_pru_channel;
+                rtdm_struct.pru_intc_host = mcasp_to_pru_channel;
+                int ret = __wrap_ioctl(rtdm_fd_mcasp_to_pru, RTDM_PRUSS_IRQ_REGISTER_FULL, &rtdm_struct);
+                if(ret == -1)
+                {
+                        fprintf(stderr, "ioctl failed: %d %s\n", errno, strerror(errno));
+                        return 1;
+                }
 	}
-#endif
-
+#endif /* RTDM_PRUSS_IRQ_VERSION >= 1 */
+#endif /* BELA_USE_RTDM */
 	pru_buffer_comm = pruMemory->getPruBufferComm();
 	initialisePruCommon();
+
+	unsigned int* pruCode;
+	unsigned int pruCodeSize;
+	switch((int)pruUsesMcaspIrq) // (int) is here to avoid stupid compiler warning
+	{
+		case false:
+			pruCode = (unsigned int*)NonIrqPruCode::getBinary();
+			pruCodeSize = NonIrqPruCode::getBinarySize();
+			break;
+		case true:
+			pruCode = (unsigned int*)IrqPruCode::getBinary();
+			pruCodeSize = IrqPruCode::getBinarySize();
+			// NOTE: we assume that something else has masked the McASP interrupts
+			// from ARM, or rather that no one else unmasked them.
+			// For instance, make sure the McASP driver does not get to get hold of them
+			// by NOT setting `interrupt-names = "rx", "tx";` in the overlay
+			break;
+	}
 
 	/* Load and execute binary on PRU */
 	if(filename[0] == '\0') { //if the string is empty, load the embedded code
 		if(gRTAudioVerbose)
 			printf("Using embedded PRU code\n");
-		if(prussdrv_exec_code(pru_number, PRUcode, sizeof(PRUcode))) {
+		if(prussdrv_exec_code(pru_number, pruCode, pruCodeSize)) {
 			fprintf(stderr, "Failed to execute PRU code\n");
 			return 1;
 		}
@@ -732,6 +801,54 @@ int PRU::start(char * const filename)
 	return 0;
 }
 
+int PRU::testPruError()
+{
+	if (unsigned int errorCode = pru_buffer_comm[PRU_ERROR_OCCURRED])
+	{
+		// only print warnings if we have been running for a while, or forced to do so
+		bool verbose = (context->audioFramesElapsed > 5000) || gRTAudioVerbose;
+		verbose && rt_fprintf(stderr, "audio frame %llu, errorCode: %d\n", context->audioFramesElapsed, errorCode);
+		int ret;
+		switch(errorCode){
+			case ARM_ERROR_XUNDRUN:
+				verbose && rt_fprintf(stderr, "McASP transmitter underrun occurred\n");
+				ret = 1;
+			break;
+			case ARM_ERROR_XSYNCERR:
+				verbose && rt_fprintf(stderr, "McASP unexpected transmit frame sync occurred\n");
+				ret = 1;
+			break;
+			// Sometimes a transmit clock error arises after boot. If the PRU loop
+			// continues, the clock error is automatically solved. Hence, no additional
+			// error handling is required on ARM side.
+			case ARM_ERROR_XCKFAIL:
+				verbose && rt_fprintf(stderr, "McASP transmit clock failure occurred\n");
+				ret = 1;
+			break;
+			// Same for DMA error. No action needed on ARM side.
+			case ARM_ERROR_XDMAERR:
+				verbose && rt_fprintf(stderr, "McASP transmit DMA error occurred\n");
+				ret = 1;
+			break;
+			case ARM_ERROR_TIMEOUT:
+				verbose && rt_fprintf(stderr, "PRU event loop timed out\n");
+				ret = 1;
+			break;
+			default:
+				verbose && rt_fprintf(stderr, "Unknown PRU error: %d\n", errorCode);
+				ret = 1;
+		}
+		codec->reset();
+		codec->initCodec();
+		codec->startAudio(0);
+		pru_buffer_comm[PRU_ERROR_OCCURRED] = 0;
+                // TODO: should restart PRU and codec from scratch
+		return ret;
+	} else {
+		return 0;
+	}
+}
+
 // Main loop to read and write data from/to PRU
 void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerformanceMode)
 {
@@ -741,18 +858,8 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 	uint16_t* analogOutRaw = pruMemory->getAnalogOutPtr();
 	int16_t* audioInRaw = pruMemory->getAudioInPtr();
 	int16_t* audioOutRaw = pruMemory->getAudioOutPtr();
-	if(context->analogInChannels != context->analogOutChannels){
-		fprintf(stderr, "Error: TODO: a different number of channels for inputs and outputs is not yet supported\n");
-		return;
-	}
 	// Polling interval is 1/4 of the period
-#ifdef CTAG_FACE_8CH
-	time_ns_t sleepTime = PRU_SAMPLE_INTERVAL_NS * (2) * context->audioFrames / 4;
-#elif defined(CTAG_BEAST_16CH)
-	time_ns_t sleepTime = PRU_SAMPLE_INTERVAL_NS * (2) * context->audioFrames / 4;
-#else
-	time_ns_t sleepTime = PRU_SAMPLE_INTERVAL_NS * (context->audioInChannels) * context->audioFrames / 4;
-#endif
+	time_ns_t sleepTime = 1000000000 * (float)context->audioFrames / (context->audioSampleRate * 4);
 	if(highPerformanceMode) // sleep less, more CPU available for us
 		sleepTime /= 4;
 #ifdef BELA_USE_RTDM
@@ -784,6 +891,7 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 	}
 
 	bool interleaved = context->flags & BELA_FLAG_INTERLEAVED;
+	int underrunLedCount = -1;
 	while(!gShouldStop) {
 
 #ifdef BELA_USE_POLL
@@ -792,6 +900,10 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 		// Poll
 		while(pru_buffer_comm[PRU_CURRENT_BUFFER] == lastPRUBuffer && !gShouldStop) {
 			task_sleep_ns(sleepTime);
+			if(testPruError())
+			{
+				break;
+			}
 		}
 
 		lastPRUBuffer = pru_buffer_comm[PRU_CURRENT_BUFFER];
@@ -800,7 +912,8 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 		// make sure we always sleep a tiny bit to prevent hanging the board
 		if(!highPerformanceMode) // unless the user requested us not to.
 			task_sleep_ns(sleepTime / 2);
-		int ret = __wrap_read(rtdm_fd, NULL, 0);
+		int ret = __wrap_read(rtdm_fd_pru_to_arm, NULL, 0);
+		testPruError();
 		if(ret < 0)
 		{
 			static int interruptTimeoutCount = 0;
@@ -841,13 +954,7 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 		int16_to_float_audio(2 * context->audioFrames, audio_adc_pru_buffer, context->audioIn);
 		// TODO: implement non-interlaved
 #else
-
-#if defined(CTAG_FACE_8CH) || defined(CTAG_BEAST_16CH)
-		//TODO: @henrix: what is this about?
-		int audioInChannels = context->audioInChannels > 8 ? 8 : context->audioInChannels;
-#else 
 		int audioInChannels = context->audioInChannels;
-#endif /* defined CTAG */
 		if(interleaved)
 		{
 			for(unsigned int n = 0; n < audioInChannels * context->audioFrames; n++) {
@@ -1000,6 +1107,17 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 					}
 				}
 			}
+			if(belaHw == BelaHw_Salt) {
+				const float analogInMax = 65535.f/65536.f;
+				for(unsigned int n = 0; n < context->analogInChannels * context->analogFrames; ++n)
+				{
+					context->analogIn[n] = analogInMax - context->analogIn[n];
+					// if analogInMax is different from 65535/65536, we should
+					// clip it to avoid reading out of range values:
+					// if(context->analogIn[n] > 1)
+						// context->analogIn[n] = 1;
+				}
+			}
 #endif /* USE_NEON_FORMAT_CONVERSION */
 			
 			if((context->audioExpanderEnabled & 0x0000FFFF) != 0) {
@@ -1071,14 +1189,18 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 			// - pins previously set as outputs will keep the output value they had in the last frame of the previous buffer,
 			// - pins previously set as inputs will carry the newly read input value
 
-			for(unsigned int n = 0; n < context->digitalFrames; n++){
+			uint32_t inputXorMask; // which digital input values need to be inverted
+			if(belaHw == BelaHw_Salt)
+				inputXorMask = 0xffff0000; // on Salt, inputs are inverted. When ^ with the input values, this will invert the values.
+			else
+				inputXorMask = 0; // everywhere else, inputs are not inverted. When ^ with the input values, this will leave them untouched.
+			for(unsigned int n = 0; n < context->digitalFrames; ++n){
 				uint16_t inputs = last_digital_buffer[n] & 0xffff; // half-word, has 1 for inputs and 0 for outputs
 
 				uint16_t outputs = ~inputs; // half-word has 1 for outputs and 0 for inputs;
 				context->digital[n] = (last_digital_buffer[context->digitalFrames - 1] & (outputs << 16)) | // keep output values set in the last frame of the previous buffer
-									   (context->digital[n] & (inputs << 16))   | // inputs from current context->digital[n];
+									   ( inputXorMask ^ (context->digital[n] & (inputs << 16)) )   | // inputs from current context->digital[n];
 									   (last_digital_buffer[n] & (inputs));     // keep pin configuration from previous context->digital[n]
-//                    context->digital[n]=digitalBufferTemp[n]; //ignores inputs
 			}
 		}
 
@@ -1088,6 +1210,16 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 		// ***********************
 
 		if(analog_enabled) {
+			if(belaHw == BelaHw_Salt) {
+				for(unsigned int n = 0; n < context->analogOutChannels * context->analogFrames; n++)
+				{
+					// also rescale it to avoid
+					// headroom problem on the analog outputs with a sagging
+					// 5V USB supply
+					const float analogOutMax = 0.93;
+					context->analogOut[n] = (1.f - context->analogOut[n]) * analogOutMax;
+				}
+			}
 			if(context->flags & BELA_FLAG_ANALOG_OUTPUTS_PERSIST) {
 				// Remember the content of the last_analog_out_frame
 				if(interleaved)
@@ -1246,6 +1378,16 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 
 		if(digital_enabled) { // keep track of past digital values
 			for(unsigned int n = 0; n < context->digitalFrames; n++){
+				if(belaHw == BelaHw_Salt) {
+					// invert output channels (trig out on the module are inverted)
+					// Also invert input channels. This way, in case
+					// there is an underrun and ARM partially
+					// overwrites the PRU memory, we read (old)
+					// meaningful values back (see https://github.com/BelaPlatform/Bela/issues/406)
+					context->digital[n] =
+						(~context->digital[n] & 0xffff0000) | // invert high word (input/output values)
+						(context->digital[n] & 0xffff); // leave low word as is (1 means input)
+				}
 				last_digital_buffer[n] = context->digital[n];
 			}
 		}
@@ -1289,27 +1431,34 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 		if(context->flags & BELA_FLAG_DETECT_UNDERRUNS) {
 			// If analog is disabled, then PRU assumes 8 analog channels, and therefore
 			// half as many analog frames as audio frames
-			static uint32_t pruFramesPerBlock = hardware_analog_frames ? hardware_analog_frames : context->audioFrames / 2;
+			uint32_t pruFramesPerBlock = pruBufferMcaspFrames;
 			// read the PRU counter
 			uint32_t pruFrameCount = pru_buffer_comm[PRU_FRAME_COUNT];
 			// we initialize lastPruFrameCount the first time we get here,
 			// just in case the PRU is already ahead of us
 			static uint32_t lastPruFrameCount = pruFrameCount - pruFramesPerBlock;
-#ifdef CTAG_FACE_8CH
-//TODO :  factor out the number of channels
-			uint32_t expectedFrameCount = lastPruFrameCount + pruFramesPerBlock * 4;
-#elif defined(CTAG_BEAST_16CH)
-			uint32_t expectedFrameCount = lastPruFrameCount + pruFramesPerBlock * 8;
-#else
 			uint32_t expectedFrameCount = lastPruFrameCount + pruFramesPerBlock;
-#endif
 			if(pruFrameCount > expectedFrameCount)
 			{
 				// don't print a warning if we are stopping
 				if(!gShouldStop)
+				{
 					rt_fprintf(stderr, "Underrun detected: %u blocks dropped\n", (pruFrameCount - expectedFrameCount) / pruFramesPerBlock);
+					if(underrunLed.enabled())
+						underrunLed.set();
+					underrunLedCount = underrunLedDuration;
+				}
 			}
 			lastPruFrameCount = pruFrameCount;
+			if(underrunLedCount > 0)
+			{
+				underrunLedCount -= context->audioFrames;
+				if(underrunLedCount <= 0)
+				{
+					if(underrunLed.enabled())
+						underrunLed.clear();
+				}
+			}
 		}
 
 		// Increment total number of samples that have elapsed.
@@ -1318,11 +1467,18 @@ void PRU::loop(void *userData, void(*render)(BelaContext*, void*), bool highPerf
 	}
 
 #if defined(BELA_USE_RTDM)
-        __wrap_close(rtdm_fd);
-#endif
+        if(rtdm_fd_pru_to_arm)
+                __wrap_close(rtdm_fd_pru_to_arm);
+#if RTDM_PRUSS_IRQ_VERSION >= 1
+        if(rtdm_fd_pru_to_arm)
+                __wrap_close(rtdm_fd_mcasp_to_pru);
+#endif /* RTDM_PRUSS_IRQ_VERSION */
+#endif /* BELA_USE_RTDM */
 
 	// Tell PRU to stop
 	pru_buffer_comm[PRU_SHOULD_STOP] = 1;
+	if(underrunLed.enabled())
+		underrunLed.clear();
 
 	// Wait for the PRU to finish
 	task_sleep_ns(100000000);
@@ -1367,7 +1523,7 @@ void PRU::waitForFinish()
 #endif
 #ifdef BELA_USE_RTDM
 	int value;
-	read(rtdm_fd, &value, sizeof(value));
+	__wrap_read(rtdm_fd_pru_to_arm, &value, sizeof(value));
 #endif
 	return;
 }

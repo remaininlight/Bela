@@ -1,0 +1,174 @@
+{
+	"BelaMini": [
+		{
+			"section": "03-Analog",
+			"name": "analog-output"
+		},
+		{
+			"section": "10-Instruments",
+			"name": "d-box"
+		},
+		{
+			"section": "11-Extras",
+			"name": "gpioAnalogLoopbackTest"
+		},
+		{
+			"section": "11-Extras",
+			"name": "salt-factory-taste"
+		}
+	],
+	"Ctag": [
+		{
+			"section": "07-DataLogging",
+			"name": "logging-sensors"
+		},
+		{
+			"section": "09-Capelets",
+			"name": "multiplexer_display"
+		},
+		{
+			"section": "09-Capelets",
+			"name": "audio-expander"
+		},
+		{
+			"section": "03-Analog",
+			"name": "analog-input"
+		},
+		{
+			"section": "03-Analog",
+			"name": "analog-output"
+		},
+		{
+			"section": "03-Analog",
+			"name": "scope-analog"
+		},
+		{
+			"section": "04-Audio",
+			"name": "tremolo"
+		},
+		{
+			"section": "12-SuperCollider",
+			"name": "3-analog-in"
+		},
+		{
+			"section": "12-SuperCollider",
+			"name": "4-analog-out"
+		},
+		{
+			"section": "12-SuperCollider",
+			"name": "6-pattern-control"
+		},
+		{
+			"section": "11-Extras",
+			"name": "cape-test"
+		},
+		{
+			"section": "11-Extras",
+			"name": "tank-wars"
+		},
+		{
+			"section": "11-Extras",
+			"name": "salt-factory-taste"
+		},
+		{
+			"section": "11-Extras",
+			"name": "measure-noisefloor"
+		},
+		{
+			"section": "11-Extras",
+			"name": "gpioAnalogLoopbackTest"
+		},
+		{
+			"section": "11-Extras",
+			"name": "oscillator-bank"
+		},
+		{
+			"section": "06-Sensors",
+			"name": "ultrasonic-distance"
+		},
+		{
+			"section": "06-Sensors",
+			"name": "LDR"
+		},
+		{
+			"section": "10-Instruments",
+			"name": "d-box"
+		},
+		{
+			"section": "08-PureData",
+			"name": "sample-scrub"
+		},
+		{
+			"section": "08-PureData",
+			"name": "karplusStrong"
+		},
+		{
+			"section": "08-PureData",
+			"name": "midi-cv-midi"
+		},
+		{
+			"section": "08-PureData",
+			"name": "basicAnalogIn"
+		},
+		{
+			"section": "08-PureData",
+			"name": "envelopeTrigger"
+		},
+		{
+			"section": "08-PureData",
+			"name": "rubberDuckie"
+		},
+		{
+			"section": "08-PureData",
+			"name": "basicAnalogOut"
+		},
+		{
+			"section": "08-PureData",
+			"name": "simple-fm"
+		},
+		{
+			"section": "14-Csound",
+			"name": "0-HelloWorld"
+		},
+		{
+			"section": "14-Csound",
+			"name": "1-AnalogIn"
+		},
+		{
+			"section": "14-Csound",
+			"name": "2-AnalogOut"
+		},
+		{
+			"section": "14-Csound",
+			"name": "3-DigitalInOut"
+		},
+		{
+			"section": "14-Csound",
+			"name": "4-MIDI_In"
+		},
+		{
+			"section": "14-Csound",
+			"name": "C++-libcsound-Control"
+		},
+		{
+			"section": "14-Csound",
+			"name": "C++-libcsound-Loopback"
+		},
+		{
+			"section": "14-Csound",
+			"name": "C++-libcsound-Sine"
+		},
+		{
+			"section": "14-Csound",
+			"name": "C++-libcsound-Trigger"
+		},
+		{
+			"section": "14-Csound",
+			"name": "C++-libcsound-gain"
+		},
+		{
+			"section": "14-Csound",
+			"name": "COSMO_FX"
+		}
+	]
+}

@@ -16,10 +16,11 @@
 #ifndef I2CCODEC_H_
 #define I2CCODEC_H_
 
+#include "AudioCodec.h"
 #include "I2c.h"
 
 
-class I2c_Codec : public I2c
+class I2c_Codec : public I2c, public AudioCodec
 {
 	short unsigned int pllJ;
 	short unsigned int pllD;
@@ -52,18 +53,21 @@ public:
 	int setHPVolume(int halfDbSteps);
 	int writeHPVolumeRegisters();
 	int disable();
+	int reset(){ return 0; } // Not needed for audio codec on Bela cape
 
 	int readI2C();
+	void setVerbose(bool isVerbose);
 
-	I2c_Codec();
+	I2c_Codec(int i2cBus, int I2cAddress, bool verbose = false);
 	~I2c_Codec();
 
 private:
 	int configureDCRemovalIIR(); //called by startAudio()
-	bool running;
 	int dacVolumeHalfDbs;
 	int adcVolumeHalfDbs;
 	int hpVolumeHalfDbs;
+	bool running;
+	bool verbose;
 };
 
 

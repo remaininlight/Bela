@@ -52,28 +52,27 @@ float amountBelowPeak = 0.001;
 float rolloffRate = 0.00005;
 int triggered = 0;
 
-int gAudioFramesPerAnalogFrame;
+int gAudioFramesPerAnalogFrame = 0;
 
 bool setup(BelaContext *context, void *userData)
 {
 
-	// Check that we have the same number of inputs and outputs.
-	if(context->audioInChannels != context->audioOutChannels ||
-			context->analogInChannels != context-> analogOutChannels){
-		printf("Error: for this project, you need the same number of input and output channels.\n");
+	if(context->analogSampleRate > context->audioSampleRate)
+	{
+		fprintf(stderr, "Error: for this project the sampling rate of the analog inputs has to be <= the audio sample rate\n");
 		return false;
 	}
 
-    for(int ch=0;ch<NUM_CHANNELS;ch++) {
-        gSampleData[ch].sampleLen = getNumFrames(gFilename);
-    	gSampleData[ch].samples = new float[gSampleData[ch].sampleLen];
-        getSamples(gFilename,gSampleData[ch].samples,ch,0,gSampleData[ch].sampleLen);
-    }
+	for(int ch=0;ch<NUM_CHANNELS;ch++) {
+        	gSampleData[ch].sampleLen = getNumFrames(gFilename);
+    		gSampleData[ch].samples = new float[gSampleData[ch].sampleLen];
+        	getSamples(gFilename,gSampleData[ch].samples,ch,0,gSampleData[ch].sampleLen);
+	}
 
 	gReadPtr = -1;
 	
-	gAudioFramesPerAnalogFrame = context->audioFrames / context->analogFrames;
-
+	if(context->analogFrames)
+		gAudioFramesPerAnalogFrame = context->audioFrames / context->analogFrames;
 
 	// setup the scope with 3 channels at the audio sample rate
 	scope.setup(3, context->audioSampleRate);
@@ -88,10 +87,9 @@ void render(BelaContext *context, void *userData)
 
 	for(unsigned int n = 0; n < context->audioFrames; n++) {
 
-		if(!(n % gAudioFramesPerAnalogFrame)) {
-			// On even audio samples:
+		if(gAudioFramesPerAnalogFrame && !(n % gAudioFramesPerAnalogFrame)) {
 			// Read analog input 0, piezo disk
-			gPiezoInput = analogRead(context, n, 0);
+			gPiezoInput = analogRead(context, n % gAudioFramesPerAnalogFrame, 0);
 		}
 		
 		// Re-centre around 0
@@ -102,8 +100,8 @@ void render(BelaContext *context, void *userData)
 		currentSample = readingDCOffset;
 
 		// Full wave rectify
-	    if(currentSample < 0.0)
-			currentSample *= -1.0;
+	    if(currentSample < 0)
+			currentSample *= -1.0f;
 		
 		// Onset Detection
 		if(currentSample >= peakValue) { // Record the highest incoming sample

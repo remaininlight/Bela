@@ -24,6 +24,7 @@ The Bela software is distributed under the GNU Lesser General Public License
 
 #include <Bela.h>	// to schedule lower prio parallel process
 #include <cmath>
+#include <algorithm>
 #include <stdio.h>
 #include <sys/types.h>
 #include "SampleData.h"
@@ -46,12 +47,12 @@ void calculate_coeff(float cutFreq);
 
 bool initialise_aux_tasks();
 
-// Task for handling the update of the frequencies using the matrix
+// Task for handling input from the keyboard
 AuxiliaryTask gChangeCoeffTask;
 
 void check_coeff(void*);
 
-// Task for handling the update of the frequencies using the matrix
+// Task for handling the update of the frequencies using the analog inputs
 AuxiliaryTask gInputTask;
 
 void read_input(void*);
@@ -62,14 +63,6 @@ extern float gCutFreq;
 
 bool setup(BelaContext *context, void *userData)
 {
-
-	// Check that we have the same number of inputs and outputs.
-	if(context->audioInChannels != context->audioOutChannels ||
-			context->analogInChannels != context-> analogOutChannels){
-		printf("Error: for this project, you need the same number of input and output channels.\n");
-		return false;
-	}
-
 	// Retrieve a parameter passed in from the initAudio() call
 	gSampleData = *(SampleData *)userData;
 
@@ -104,8 +97,9 @@ void render(BelaContext *context, void *userData)
 		gLastY[1] = gLastY[0];
 		gLastY[0] = out;
 
-		for(unsigned int channel = 0; channel < context->audioOutChannels; channel++)
-			context->audioOut[n * context->audioOutChannels + channel] = out;	// ...and put it in both left and right channel
+		for(unsigned int channel = 0; channel < context->audioOutChannels; ++channel)
+			// ...and copy it to all the output channels
+			audioWrite(context, n, channel, out);
 
 	}
 

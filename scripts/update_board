@@ -11,7 +11,7 @@ SCRIPTDIR=$(dirname "$0")
 
 [ -z "$IDE_FOLDER" ] && IDE_FOLDER=$SCRIPTDIR/../IDE
 [ -z "$FORCE_REPLACE" ] && FORCE_REPLACE=0
-FILES_TO_COPY="core include Makefile lib examples Doxyfile scripts resources pru_rtaudio.p"
+FILES_TO_COPY="core include Makefile examples Doxyfile scripts resources pru"
 
 # The following variables are manually copied from the Makefile.
 # It is a bit nasty, but here we need to handle the case that the board may be 
@@ -54,7 +54,7 @@ signal_handler ()
 trap signal_handler 2 
 
 error_handler () {
- [ $1 -eq 0 ] && printf "done\n" || { [ -z "$2" ] && printf "\nAn error occurred. Is the board connected?\n" || printf "$2"; exit 1; }
+ [ $1 -eq 0 ] && printf "done\n" || { [ -z "$2" ] && printf "\nAn error occurred.\n" || printf "$2"; exit 1; }
 }
 
 FULL=1
@@ -162,7 +162,7 @@ fi
 error_handler $?
 
 # a bunch of files to be processed manually to special locations
-ssh $BBB_ADDRESS "make -C $BBB_BELA_HOME/resources/tools/bela-cape-btn install"
+ssh $BBB_ADDRESS "for DIR in $BBB_BELA_HOME/resources/tools/*; do make -C \"\$DIR\" install || exit 1;  done"
 error_handler $?
 
 # remove stale version of libpd on old images
@@ -171,7 +171,7 @@ error_handler $?
 
 DEBIAN_VERSION=`get_board_debian_version`
 # Install system-specific packages
-ssh $BBB_ADDRESS "dpkg -i $BBB_BELA_HOME/resources/$DEBIAN_VERSION/deb/*.deb && ldconfig"
+ssh $BBB_ADDRESS "dpkg -i $BBB_BELA_HOME/resources/$DEBIAN_VERSION/deb/*.deb && ldconfig || exit 1"
 error_handler $?
 
 if [ "$DEBIAN_VERSION" = wheezy ]
@@ -183,6 +183,12 @@ then
 	copy_if_does_not_exist resources/wheezy/sh/Bela_capeButtonHold.sh "" $FORCE_REPLACE
 fi
 error_handler $?
+
+# Copy some custom files to the rootfs
+if [ -d "resources/"$DEBIAN_VERSION"/rootfs/" ]
+then
+	scp -r resources/$DEBIAN_VERSION/rootfs/* $BBB_ADDRESS:/
+fi
 
 # Create remaining directories needed for building
 printf "Creating directory structure on BeagleBone..."
