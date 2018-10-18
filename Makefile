@@ -8,6 +8,7 @@
 ## available command line options: #
 ## EXAMPLE=             -- name of the folder in examples/ to be copied to projects/ and built
 ## PROJECT=             -- name of the folder in projects/ to be built
+## BELAROOT=             -- path to Bela root
 ## CL=                  -- list of command line options to pass to the program when running
 ## CPPFLAGS=           -- list of additional flags passed to the C++ compiler
 ## CFLAGS=             -- list of additional flags passed to the C compiler
@@ -175,6 +176,7 @@ endif
 RUN_IDE_COMMAND?=PATH=$$PATH:/usr/local/bin/ stdbuf -i0 -o0 -e0 $(RUN_COMMAND)
 BELA_AUDIO_THREAD_NAME?=bela-audio 
 BELA_IDE_HOME?=/root/Bela/IDE
+#BELA_IDE_HOME?=/root/Bela/IDE
 XENO_CONFIG=/usr/xenomai/bin/xeno-config
 XENOMAI_SKIN=posix
 
@@ -269,7 +271,7 @@ QUIET?=false
 
 RM := rm -rf
 
-INCLUDES := -I$(PROJECT_DIR) -I./include -I/usr/include/ -I./build/pru/
+INCLUDES := -I$(PROJECT_DIR) -I./include -I./build/pru/
 ifeq ($(XENOMAI_VERSION),2.6)
   BELA_USE_DEFINE=BELA_USE_POLL
 endif
@@ -348,7 +350,7 @@ ALL_DEPS += $(addprefix build/core/,$(notdir $(CORE_C_SRCS:.c=.d)))
 
 CORE_CPP_SRCS = $(filter-out core/default_main.cpp core/default_libpd_render.cpp, $(wildcard core/*.cpp))
 CORE_OBJS := $(CORE_OBJS) $(addprefix build/core/,$(notdir $(CORE_CPP_SRCS:.cpp=.o)))
-CORE_CORE_OBJS := build/core/RTAudio.o build/core/PRU.o build/core/RTAudioCommandLine.o build/core/I2c_Codec.o build/core/math_runfast.o build/core/GPIOcontrol.o build/core/PruBinary.o build/core/board_detect.o
+CORE_CORE_OBJS := build/core/RTAudio.o build/core/PRU.o build/core/RTAudioCommandLine.o build/core/I2c_Codec.o build/core/Spi_Codec.o build/core/math_runfast.o build/core/GPIOcontrol.o build/core/PruBinary.o build/core/board_detect.o
 EXTRA_CORE_OBJS := $(filter-out $(CORE_CORE_OBJS), $(CORE_OBJS))
 ALL_DEPS += $(addprefix build/core/,$(notdir $(CORE_CPP_SRCS:.cpp=.d)))
 
